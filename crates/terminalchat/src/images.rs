@@ -214,6 +214,11 @@ pub fn detect_picker(config: &Config) -> Option<Picker> {
     if let Some(protocol) = forced.as_deref().and_then(protocol_by_name) {
         picker.set_protocol_type(protocol);
     }
+    let konsole = std::env::var_os("KONSOLE_VERSION").is_some_and(|value| !value.is_empty());
+    if konsole && forced.is_none() && picker.protocol_type() != ProtocolType::Halfblocks {
+        // Konsole claims Kitty support but cannot show its placeholders; Sixel works there
+        picker.set_protocol_type(ProtocolType::Sixel);
+    }
     if picker.protocol_type() == ProtocolType::Halfblocks {
         return None;
     }
@@ -466,7 +471,8 @@ fn http_date(time: SystemTime) -> String {
 
 async fn load(client: &reqwest::Client, key: &Key, max_age: Duration, max_width: u32, max_height: u32) -> Option<Frames> {
     let bytes = fetch(client, key, max_age).await?;
-    tokio::task::spawn_blocking(move || decode(&bytes, max_width, max_height)).await.ok().flatten()
+    let fill = key.kind != Kind::Thumb;
+    tokio::task::spawn_blocking(move || decode(&bytes, max_width, max_height, fill)).await.ok().flatten()
 }
 
 async fn fetch(client: &reqwest::Client, key: &Key, max_age: Duration) -> Option<Vec<u8>> {
@@ -518,7 +524,7 @@ async fn fetch(client: &reqwest::Client, key: &Key, max_age: Duration) -> Option
     Some(bytes.to_vec())
 }
 
-fn flatten_and_fit(mut image: RgbaImage, max_width: u32, max_height: u32) -> RgbaImage {
+fn flatten_and_fit(mut image: RgbaImage, max_width: u32, max_height: u32, fill: bool) -> RgbaImage {
     for pixel in image.pixels_mut() {
         let alpha = u32::from(pixel[3]);
         for channel in 0..3 {
@@ -527,16 +533,21 @@ fn flatten_and_fit(mut image: RgbaImage, max_width: u32, max_height: u32) -> Rgb
         pixel[3] = 255;
     }
     let (width, height) = image.dimensions();
-    if width <= max_width && height <= max_height {
+    if !fill && width <= max_width && height <= max_height {
         return image;
     }
     let scale = (max_width as f64 / width as f64).min(max_height as f64 / height as f64);
-    let new_width = ((width as f64 * scale) as u32).max(1);
-    let new_height = ((height as f64 * scale) as u32).max(1);
-    image::imageops::resize(&image, new_width, new_height, FilterType::Triangle)
+    let new_width = ((width as f64 * scale).round() as u32).max(1);
+    let new_height = ((height as f64 * scale).round() as u32).max(1);
+    if (new_width, new_height) == (width, height) {
+        return image;
+    }
+    let filter = if scale > 1.0 { FilterType::CatmullRom } else { FilterType::Triangle };
+    image::imageops::resize(&image, new_width, new_height, filter)
 }
 
-pub fn decode(bytes: &[u8], max_width: u32, max_height: u32) -> Option<Frames> {
+/// `fill` scales the image up as well, so that it uses the full height.
+pub fn decode(bytes: &[u8], max_width: u32, max_height: u32, fill: bool) -> Option<Frames> {
     let format = image::guess_format(bytes).ok()?;
     let mut frames: Frames = Vec::new();
     if format == ImageFormat::Gif {
@@ -546,11 +557,11 @@ pub fn decode(bytes: &[u8], max_width: u32, max_height: u32) -> Option<Frames> {
             let (numerator, denominator) = frame.delay().numer_denom_ms();
             let millis = numerator.checked_div(denominator).unwrap_or(100);
             let millis = if millis < 20 { 100 } else { millis.max(50) };
-            frames.push((flatten_and_fit(frame.into_buffer(), max_width, max_height), Duration::from_millis(u64::from(millis))));
+            frames.push((flatten_and_fit(frame.into_buffer(), max_width, max_height, fill), Duration::from_millis(u64::from(millis))));
         }
     } else {
         let image = image::load_from_memory(bytes).ok()?.to_rgba8();
-        frames.push((flatten_and_fit(image, max_width, max_height), Duration::ZERO));
+        frames.push((flatten_and_fit(image, max_width, max_height, fill), Duration::ZERO));
     }
     if frames.is_empty() {
         None
@@ -604,9 +615,22 @@ mod tests {
         let mut png = Vec::new();
         let image = RgbaImage::from_pixel(100, 50, image::Rgba([255, 0, 0, 255]));
         image.write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
-        let frames = decode(&png, 40, 40).unwrap();
+        let frames = decode(&png, 40, 40, false).unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].0.dimensions(), (40, 20));
+    }
+
+    #[test]
+    fn small_images_fill_the_height_when_asked() {
+        let mut png = Vec::new();
+        let image = RgbaImage::from_pixel(50, 50, image::Rgba([0, 255, 0, 255]));
+        image.write_to(&mut Cursor::new(&mut png), ImageFormat::Png).unwrap();
+        assert_eq!(decode(&png, 288, 72, true).unwrap()[0].0.dimensions(), (72, 72));
+        assert_eq!(decode(&png, 288, 72, false).unwrap()[0].0.dimensions(), (50, 50));
+        let wide = RgbaImage::from_pixel(400, 10, image::Rgba([0, 0, 255, 255]));
+        let mut data = Vec::new();
+        wide.write_to(&mut Cursor::new(&mut data), ImageFormat::Png).unwrap();
+        assert_eq!(decode(&data, 288, 72, true).unwrap()[0].0.dimensions(), (288, 7));
     }
 
     #[test]

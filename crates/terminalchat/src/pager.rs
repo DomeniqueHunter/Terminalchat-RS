@@ -19,6 +19,7 @@ pub const MIN_OPEN_LINES: usize = 20;
 pub const MAX_LOADED_LINES: usize = 600;
 const RULE_WIDTH: usize = 24;
 const MARKER: char = '\u{E000}';
+const LINE_END: char = '\u{E001}';
 
 pub type EntryKey = (String, usize);
 
@@ -356,15 +357,58 @@ impl Pager {
                 return rows;
             }
         }
-        let (text, images) = if self.image_rows > 0 { images::extract(line, images::MAX_PER_MESSAGE) } else { (line.to_string(), Vec::new()) };
-        let mut rows: Vec<Row> = wrap(&render_line(&text, src.name_style, reveal), width)
-            .into_iter()
-            .map(|segs| Row { segs, key: key.clone(), kind: RowKind::Text, images: Vec::new(), slots: Vec::new() })
-            .collect();
-        if !images.is_empty() {
-            rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::Image, images, slots: Vec::new() });
-            for _ in 1..self.image_rows {
-                rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::ImageCont, images: Vec::new(), slots: Vec::new() });
+        if self.image_rows == 0 {
+            return wrap(&render_line(line, src.name_style, reveal), width)
+                .into_iter()
+                .map(|segs| Row { segs, key: key.clone(), kind: RowKind::Text, images: Vec::new(), slots: Vec::new() })
+                .collect();
+        }
+
+        // Every text line with images gets its own strip below it, marked by LINE_END.
+        let mut lines: Vec<String> = Vec::new();
+        let mut groups: Vec<Vec<Key>> = Vec::new();
+        if line.contains(LINE_END) || line.to_ascii_lowercase().contains("[noparse]") {
+            let (text, keys) = images::extract(line, images::MAX_PER_MESSAGE);
+            if keys.is_empty() {
+                lines.push(text);
+            } else {
+                lines.push(format!("{text}{LINE_END}"));
+                groups.push(keys);
+            }
+        } else {
+            let mut remaining = images::MAX_PER_MESSAGE;
+            for part in line.split('\n') {
+                let (text, keys) = images::extract(part, remaining);
+                remaining -= keys.len();
+                if keys.is_empty() {
+                    lines.push(text);
+                } else {
+                    lines.push(format!("{text}{LINE_END}"));
+                    groups.push(keys);
+                }
+            }
+        }
+        let mut groups = groups.into_iter();
+        let mut rows: Vec<Row> = Vec::new();
+        for mut segs in wrap(&render_line(&lines.join("\n"), src.name_style, reveal), width) {
+            let marked = segs.iter().any(|seg| seg.text.contains(LINE_END));
+            if marked {
+                for seg in &mut segs {
+                    seg.text.retain(|c| c != LINE_END);
+                }
+                segs.retain(|seg| !seg.text.is_empty());
+            }
+            let blank = marked && segs.iter().all(|seg| seg.text.trim().is_empty());
+            if !blank {
+                rows.push(Row { segs, key: key.clone(), kind: RowKind::Text, images: Vec::new(), slots: Vec::new() });
+            }
+            if marked {
+                if let Some(images) = groups.next() {
+                    rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::Image, images, slots: Vec::new() });
+                    for _ in 1..self.image_rows {
+                        rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::ImageCont, images: Vec::new(), slots: Vec::new() });
+                    }
+                }
             }
         }
         rows
@@ -500,5 +544,19 @@ mod tests {
         assert_eq!(text, "[2026-11-18 10:00:00] Max: hi          da");
         let narrow = pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon] da", None, false, 30);
         assert!(narrow.iter().any(|row| row.kind == RowKind::Text), "too narrow: strip below the text");
+    }
+
+    #[test]
+    fn every_text_line_gets_its_own_strip() {
+        let (store, ads, chat) = setup("grid", 0);
+        let pager = Pager { image_rows: 2, ..Default::default() };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
+        let line = "[2026-11-18 10:00:00] Max: miau\n[eicon]a[/eicon][eicon]b[/eicon]\n[eicon]c[/eicon][eicon]d[/eicon]\n\nende";
+        let rows = pager.entry_rows(&src, line, None, false, 60);
+        let kinds: Vec<&RowKind> = rows.iter().map(|row| &row.kind).collect();
+        use RowKind::*;
+        assert_eq!(kinds, vec![&Text, &Image, &ImageCont, &Image, &ImageCont, &Text, &Text]);
+        assert_eq!(rows[1].images.len(), 2);
+        assert_eq!(rows[3].images.len(), 2);
     }
 }

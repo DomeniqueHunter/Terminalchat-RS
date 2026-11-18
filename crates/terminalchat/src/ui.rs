@@ -212,7 +212,7 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
                 (key, Some(link))
             })
             .collect();
-        let target = StripTarget { x: area.x, y, width: area.width.saturating_sub(1), rows: image_rows as u16, draw: complete && draw_images, chat: true, slots };
+        let target = StripTarget { x: area.x, y, width: area.width.saturating_sub(1), rows: image_rows as u16, draw: complete && draw_images, chat: true, gap: 0, slots };
         draw_strip(frame, app, &items, &target);
     }
     if scroll > 0 {
@@ -232,6 +232,8 @@ struct StripTarget {
     rows: u16,
     draw: bool,
     chat: bool,
+    /// Empty columns between images (0 in the chat so that split pictures join).
+    gap: u16,
     /// Fixed (column, width) of each image inside a text line; empty = side by side.
     slots: Vec<(u16, u16)>,
 }
@@ -272,7 +274,7 @@ fn draw_strip(frame: &mut Frame, app: &mut App, items: &[(Key, Option<String>)],
                 app.regions.modal_links.push((area, link.clone()));
             }
         }
-        x += columns + 1;
+        x += columns + target.gap;
     }
 }
 
@@ -925,7 +927,7 @@ fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, items: &[PItem], a
     }
     frame.render_widget(Paragraph::new(shown), area);
     for (y, items, strip_rows, complete) in strips {
-        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false, slots: Vec::new() };
+        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false, gap: 1, slots: Vec::new() };
         draw_strip(frame, app, &items, &target);
     }
 }

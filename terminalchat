@@ -22,6 +22,10 @@ if [[ -z "${BIN}" ]]; then
     exit 1
 fi
 
+# Images: Sixel by default (Konsole claims Kitty support but cannot show it, and over SSH the
+# terminal is not recognized). Override with TERMINALCHAT_IMAGES=off|kitty|iterm2 | sixel.
+export TERMINALCHAT_IMAGES="${TERMINALCHAT_IMAGES:-sixel}"
+
 if ! command -v tmux >/dev/null 2>&1; then
     echo "tmux not found - starting without background support (/minimize unavailable)" >&2
     exec "${BIN}"
@@ -33,7 +37,7 @@ tmux_cmd() {
 
 if ! tmux_cmd has-session -t "${SESSION}" 2>/dev/null; then
     env_args=()
-    for name in NO_COLOR TERMINALCHAT_CONFIG TERMINALCHAT_DATA; do
+    for name in NO_COLOR TERMINALCHAT_CONFIG TERMINALCHAT_DATA TERMINALCHAT_IMAGES; do
         if [[ -n "${!name:-}" ]]; then
             env_args+=(-e "${name}=${!name}")
         fi
