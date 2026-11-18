@@ -28,7 +28,7 @@ pub const THUMB_COLUMNS: usize = 5;
 const MAX_MEMORY_IMAGES: usize = 100;
 const MAX_FRAMES: usize = 60;
 /// More animated images than this on screen: none of them animates (saves bandwidth, e.g. over SSH).
-const MAX_ANIMATED: usize = 4;
+const MAX_ANIMATED: usize = 12;
 const MIN_FRAME_MILLIS: u32 = 100;
 const MAX_ASPECT: u32 = 4;
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -147,6 +147,10 @@ struct Loaded {
     total: Duration,
     started: Instant,
     protocols: HashMap<usize, Protocol>,
+    /// Same frames without the erase sequence in front, for redraws at the same place.
+    quiet: HashMap<usize, Protocol>,
+    /// Where and with which frame the image was drawn last.
+    last: Option<(Rect, usize)>,
     used: u64,
 }
 
@@ -256,8 +260,7 @@ impl ImageStore {
 
     pub fn configure(&mut self, picker: Option<Picker>, config: &Config) {
         self.picker = picker;
-        // GIFs resend their pixels with every frame: off by default over SSH, /gif on enables them
-        self.animate = config.eicon_animate && std::env::var_os("SSH_CONNECTION").is_none();
+        self.animate = config.eicon_animate;
         self.eicon_rows = config.eicon_height.clamp(1, 20) as u16;
         self.max_age = Duration::from_secs_f64(config.eicon_max_age_hours.max(0.0) * 3600.0);
         if self.picker.is_some() {
@@ -364,6 +367,8 @@ impl ImageStore {
                     total,
                     started: Instant::now(),
                     protocols: HashMap::new(),
+                    quiet: HashMap::new(),
+                    last: None,
                     used: self.clock,
                 }))
             }
@@ -403,6 +408,8 @@ impl ImageStore {
             if let Slot::Ready(loaded) = slot {
                 if !self.visible.contains(key) {
                     loaded.protocols.clear();
+                    loaded.quiet.clear();
+                    loaded.last = None;
                 }
             }
         }
@@ -472,9 +479,33 @@ impl ImageStore {
                 Err(_) => return false,
             }
         }
-        frame.render_widget(Image::new(&loaded.protocols[&index]), area);
+        // The library erases the area before every Sixel image. Over a slow link that shows as
+        // flicker, so a new frame at the same place is drawn over the old one without erasing.
+        let same_place = loaded.last.is_some_and(|(last_area, last_index)| last_area == area && last_index != index);
+        if same_place {
+            if !loaded.quiet.contains_key(&index) {
+                let mut protocol = loaded.protocols[&index].clone();
+                strip_erase(&mut protocol);
+                loaded.quiet.insert(index, protocol);
+            }
+            frame.render_widget(Image::new(&loaded.quiet[&index]), area);
+        } else {
+            frame.render_widget(Image::new(&loaded.protocols[&index]), area);
+        }
+        loaded.last = Some((area, index));
         self.drawn.insert(key.clone());
         true
+    }
+}
+
+/// Removes the erase sequence in front of the Sixel data (not inside tmux passthrough).
+fn strip_erase(protocol: &mut Protocol) {
+    if let Protocol::Sixel(sixel) = protocol {
+        if !sixel.is_tmux {
+            if let Some(start) = sixel.data.find("\x1bP") {
+                sixel.data.drain(..start);
+            }
+        }
     }
 }
 
@@ -681,7 +712,7 @@ mod tests {
         let mut picker = Picker::halfblocks();
         picker.set_protocol_type(ProtocolType::Sixel);
         store.picker = Some(picker);
-        let keys: Vec<Key> = (0..5).map(|index| Key::new(Kind::Eicon, &format!("e{index}"))).collect();
+        let keys: Vec<Key> = (0..=MAX_ANIMATED).map(|index| Key::new(Kind::Eicon, &format!("e{index}"))).collect();
         for key in &keys {
             store.slots.insert(key.clone(), Slot::Loading);
             let frames = vec![
@@ -690,8 +721,8 @@ mod tests {
             ];
             store.on_loaded(key.clone(), Some(frames));
         }
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 5)).unwrap();
-        for shown in [4usize, 5] {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 5)).unwrap();
+        for shown in [MAX_ANIMATED, MAX_ANIMATED + 1] {
             store.begin_frame();
             terminal
                 .draw(|frame| {
@@ -703,5 +734,40 @@ mod tests {
             store.end_frame();
             assert_eq!(store.next_wake().is_some(), shown <= MAX_ANIMATED);
         }
+    }
+
+    #[test]
+    fn a_new_frame_at_the_same_place_is_not_preceded_by_an_erase() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut store = ImageStore::new(tx);
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Sixel);
+        store.picker = Some(picker);
+        let key = Key::new(Kind::Eicon, "cat");
+        store.slots.insert(key.clone(), Slot::Loading);
+        let frames = vec![
+            (RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100)),
+            (RgbaImage::from_pixel(20, 40, image::Rgba([0, 255, 0, 255])), Duration::from_millis(100)),
+        ];
+        store.on_loaded(key.clone(), Some(frames));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 5)).unwrap();
+        let area = Rect::new(1, 1, 2, 2);
+        let draw = |store: &mut ImageStore, terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>| {
+            store.begin_frame();
+            terminal.draw(|frame| {
+                store.render(frame, &key, area);
+            })
+            .unwrap();
+            store.end_frame();
+            terminal.backend().buffer().cell((1, 1)).unwrap().symbol().to_string()
+        };
+        let first = draw(&mut store, &mut terminal);
+        assert!(first.contains("X\x1b[1B"), "first draw erases the area");
+        if let Some(Slot::Ready(loaded)) = store.slots.get_mut(&key) {
+            loaded.started = Instant::now() - Duration::from_millis(150);
+        }
+        let second = draw(&mut store, &mut terminal);
+        assert_ne!(first, second);
+        assert!(second.starts_with("\x1bP"), "no erase in front of the next frame");
     }
 }

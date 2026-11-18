@@ -487,7 +487,6 @@ impl App {
             let _ = self.config.save();
         }
         let state = if self.images.animate { "on" } else { "off" };
-        let state = if !self.images.animate && std::env::var_os("SSH_CONNECTION").is_some() { "off (default over SSH: /gif on)" } else { state };
         let info = self.image_info();
         self.notify(format!("GIF animation: {state} ({info})"), Severity::Information);
     }
