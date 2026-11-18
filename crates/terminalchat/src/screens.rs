@@ -4,6 +4,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 
 use crate::bbcode::Seg;
+use crate::input::InputBox;
 use crate::style::BBCODE_COLOR_NAMES;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -343,26 +344,70 @@ pub fn emoji_items() -> Vec<PickItem> {
 
 pub struct EditScreen {
     pub title: String,
-    pub text: String,
+    pub input: InputBox,
     pub max: usize,
 }
 
 impl EditScreen {
     pub fn new(title: &str, text: &str, max: usize) -> EditScreen {
-        EditScreen { title: title.to_string(), text: text.to_string(), max }
+        let mut input = InputBox::new();
+        input.history_enabled = false;
+        input.set_text(text);
+        EditScreen { title: title.to_string(), input, max }
+    }
+
+    pub fn insert(&mut self, text: &str) {
+        let room = self.max.saturating_sub(self.input.char_count());
+        let text: String = text.chars().filter(|c| !c.is_control()).take(room).collect();
+        self.input.insert_str(&text);
+    }
+
+    fn newline(&mut self) {
+        if self.input.char_count() < self.max {
+            self.input.newline();
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
-            KeyCode::Enter => return Action::Edit(self.text.clone()),
+            KeyCode::Enter if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT) => self.newline(),
+            KeyCode::Char('j') if is_ctrl(&key) => self.newline(),
+            KeyCode::Enter => return Action::Edit(self.input.text().to_string()),
             KeyCode::Esc => return Action::Close,
-            KeyCode::Backspace => {
-                self.text.pop();
-            }
-            KeyCode::Char('u') if is_ctrl(&key) => self.text.clear(),
-            KeyCode::Char(c) if !is_ctrl(&key) && self.text.chars().count() < self.max => self.text.push(c),
+            KeyCode::Backspace => self.input.backspace(),
+            KeyCode::Delete => self.input.delete(),
+            KeyCode::Left => self.input.left(),
+            KeyCode::Right => self.input.right(),
+            KeyCode::Home => self.input.home(),
+            KeyCode::End => self.input.end(),
+            KeyCode::Char('u') if is_ctrl(&key) => self.input.set_text(""),
+            KeyCode::Char('a') if is_ctrl(&key) => self.input.home(),
+            KeyCode::Char('e') if is_ctrl(&key) => self.input.end(),
+            KeyCode::Char(c) if !is_ctrl(&key) => self.insert(&c.to_string()),
             _ => {}
         }
         Action::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_screen_edits_in_the_middle_and_respects_the_limit() {
+        let mut edit = EditScreen::new("Status", "hallo welt", 12);
+        for _ in 0..5 {
+            edit.on_key(KeyEvent::from(KeyCode::Left));
+        }
+        edit.on_key(KeyEvent::from(KeyCode::Char('!')));
+        assert_eq!(edit.input.text(), "hallo! welt");
+        edit.on_key(KeyEvent::from(KeyCode::Delete));
+        assert_eq!(edit.input.text(), "hallo!welt");
+        edit.insert("abcdef");
+        assert_eq!(edit.input.char_count(), 12);
+        edit.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert!(edit.input.text().ends_with('\n') || edit.input.char_count() == 12);
+        assert!(matches!(edit.on_key(KeyEvent::from(KeyCode::Enter)), Action::Edit(_)));
     }
 }

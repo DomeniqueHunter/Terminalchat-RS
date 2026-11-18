@@ -30,7 +30,7 @@ fn paste(app: &mut App, text: &str) {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     match app.screens.last_mut() {
         Some(Screen::Picker(picker)) => picker.filter.push_str(&text.replace('\n', " ")),
-        Some(Screen::Edit(edit)) => edit.text.push_str(&text.replace('\n', " ")),
+        Some(Screen::Edit(edit)) => edit.insert(&text.replace('\n', " ")),
         Some(Screen::Login(login)) => match login.focus {
             0 => login.account.push_str(text.trim()),
             1 => login.password.push_str(text.trim()),
@@ -148,7 +148,7 @@ fn on_key(app: &mut App, key: KeyEvent) {
             app.input.insert_template(template);
         }
         KeyCode::Char(c) => app.input.insert_char(c),
-        KeyCode::Enter if alt || shift => app.input.newline(),
+        KeyCode::Enter if alt || shift || ctrl => app.input.newline(),
         KeyCode::Enter => app.submit(),
         KeyCode::Backspace => app.input.backspace(),
         KeyCode::Delete => app.input.delete(),

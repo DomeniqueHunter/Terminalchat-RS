@@ -75,7 +75,8 @@ pub const FOOTER_KEYS: &[(char, &str)] = &[
 
 pub const SHORTCUT_INFO: &[(&str, &str)] = &[
     ("enter", "send the message (Ads mode: post the ad)"),
-    ("ctrl+j / alt+enter", "new line"),
+    ("ctrl+enter / shift+enter", "new line (if the terminal supports it)"),
+    ("ctrl+j / alt+enter", "new line (works everywhere)"),
     ("up / down", "move between lines, then browse sent input"),
     ("tab / shift+tab", "complete a command or character name (next / previous)"),
     ("ctrl+c", "clear the input (ctrl+z brings it back)"),

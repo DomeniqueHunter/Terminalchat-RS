@@ -715,11 +715,47 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             cursor = Some((inner.x + 9 + text_width(&picker.filter) as u16, inner.y));
         }
         Screen::Edit(edit) => {
-            let outer = centered(area, 64, 6);
+            let columns = 60usize;
+            let mut lines: Vec<String> = vec![String::new()];
+            let mut used = 0usize;
+            let mut cursor_at = (0usize, 0usize);
+            let cursor_index = edit.input.cursor();
+            for (index, c) in edit.input.text().chars().enumerate() {
+                if c == '\n' {
+                    if index == cursor_index {
+                        cursor_at = (lines.len() - 1, used);
+                    }
+                    lines.push(String::new());
+                    used = 0;
+                    continue;
+                }
+                let w = char_width(c);
+                if used + w > columns {
+                    lines.push(String::new());
+                    used = 0;
+                }
+                if index == cursor_index {
+                    cursor_at = (lines.len() - 1, used);
+                }
+                lines.last_mut().unwrap().push(c);
+                used += w;
+            }
+            if cursor_index >= edit.input.char_count() {
+                if used >= columns {
+                    lines.push(String::new());
+                    used = 0;
+                }
+                cursor_at = (lines.len() - 1, used);
+            }
+            let outer = centered(area, 64, (lines.len() as u16 + 4).min(area.height));
             let inner = modal(frame, outer, &edit.title.clone());
-            let text = format!("{}  ({}/{})", edit.text, edit.text.chars().count(), edit.max);
-            frame.render_widget(Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false }), rect(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), inner.height.saturating_sub(1)));
-            footer(frame, outer, "enter: save, esc: cancel, ctrl+u: clear");
+            for (row, line) in lines.iter().enumerate() {
+                frame.render_widget(Paragraph::new(line.clone()), rect(inner.x + 1, inner.y + 1 + row as u16, inner.width.saturating_sub(2), 1));
+            }
+            let count = format!("{}/{}", edit.input.char_count(), edit.max);
+            frame.render_widget(Paragraph::new(Span::styled(count, dim())), rect(inner.x + 1, inner.y + 1 + lines.len() as u16, inner.width.saturating_sub(2), 1));
+            cursor = Some((inner.x + 1 + cursor_at.1 as u16, inner.y + 1 + cursor_at.0 as u16));
+            footer(frame, outer, "enter: save, ctrl+enter / ctrl+j: new line, esc: cancel, ctrl+u: clear");
         }
     }
     if let Some((x, y)) = cursor {
