@@ -9,6 +9,7 @@ SKIP_PACKAGES=0
 SKIP_RUST=0
 SKIP_BUILD=0
 SKIP_LINK=0
+DOWNLOAD=0
 ASSUME_YES=0
 
 usage() {
@@ -25,6 +26,8 @@ Options:
   --skip-rust       do not install or update Rust
   --skip-build      do not build, only prepare
   --skip-link       do not link the launcher into ~/.local/bin
+  --download        download the prebuilt binary of the latest GitHub release
+                    instead of building (repo from 'git remote' or TERMINALCHAT_REPO=owner/repo)
   -y, --yes         do not ask before installing anything
   -h, --help        show this help
 EOF
@@ -46,6 +49,7 @@ parse_args() {
             --skip-rust) SKIP_RUST=1 ;;
             --skip-build) SKIP_BUILD=1 ;;
             --skip-link) SKIP_LINK=1 ;;
+            --download) DOWNLOAD=1; SKIP_RUST=1; SKIP_BUILD=1 ;;
             -y|--yes) ASSUME_YES=1 ;;
             -h|--help) usage; exit 0 ;;
             *) usage >&2; fail "unknown option: $1" ;;
@@ -159,6 +163,36 @@ build() {
     "${BASE_DIR}/build.sh"
 }
 
+github_repo() {
+    if [[ -n "${TERMINALCHAT_REPO:-}" ]]; then
+        echo "${TERMINALCHAT_REPO}"
+        return
+    fi
+    git -C "${BASE_DIR}" remote get-url origin 2>/dev/null | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##'
+}
+
+download_binary() {
+    local repo arch target
+    repo="$(github_repo)"
+    [[ "${repo}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "GitHub repository unknown - set TERMINALCHAT_REPO=owner/repo"
+    arch="$(uname -m)"
+    target="${BASE_DIR}/build/terminalchat-${arch}"
+    mkdir -p "${BASE_DIR}/build"
+    info "Downloading terminalchat-${arch} from ${repo} (latest release)"
+    rm -f "${target}"
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+        gh release download --repo "${repo}" --pattern "terminalchat-${arch}" --output "${target}" \
+            || fail "download with gh failed"
+    else
+        command -v curl >/dev/null 2>&1 || fail "curl not found"
+        curl -fL --proto '=https' --tlsv1.2 -o "${target}" \
+            "https://github.com/${repo}/releases/latest/download/terminalchat-${arch}" \
+            || fail "download failed (private repository? log in with 'gh auth login' and try again)"
+    fi
+    chmod +x "${target}"
+    info "-> ${target}"
+}
+
 link_launcher() {
     local launcher="${BASE_DIR}/terminalchat"
     local current
@@ -213,6 +247,9 @@ main() {
     if [[ "${SKIP_BUILD}" -eq 0 ]]; then
         command -v cargo >/dev/null 2>&1 || fail "cargo not found (run without --skip-rust)"
         build
+    fi
+    if [[ "${DOWNLOAD}" -eq 1 ]]; then
+        download_binary
     fi
     if [[ "${SKIP_LINK}" -eq 0 ]]; then
         link_launcher

@@ -61,3 +61,8 @@ Without a complete `config.json` a login screen appears. `/help` lists commands,
 - Eicons and icons of a message appear in a strip below the message (`eicon_height` rows). Click an image to copy its link. The profile shows the avatar on top and thumbnails in the Images section; click a thumbnail to copy the link of the full image.
 - `/gif [on|off]` switches GIF animation (config `eicon_animate`), `/resizeimages` measures the cell size again. Animation runs only for visible images and pauses while the tmux client is detached.
 - Cache: `~/.cache/terminalchat/{eicons,avatars,thumbs}` (same as the Python version), refreshed after `eicon_max_age_hours`.
+
+## GitHub Actions
+
+`.github/workflows/ci.yml` runs clippy and the tests on x86_64 and ARM64 for every push and pull request. A tag like `v0.1.0` additionally builds both binaries and attaches `terminalchat-x86_64` and `terminalchat-aarch64` to a GitHub release (built on Ubuntu 22.04, so they also run on Raspberry Pi OS Bookworm). On the Pi, `./setup.sh --download` fetches the binary of the latest release instead of building.
+
