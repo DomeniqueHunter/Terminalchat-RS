@@ -32,6 +32,8 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub colors: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
 
     #[serde(flatten)]
@@ -60,6 +62,7 @@ impl Default for Config {
             eicon_animate: true,
             eicon_max_age_hours: 24.0,
             cell_size: None,
+            colors: None,
             data_dir: None,
             extra: Map::new(),
             path: PathBuf::new(),

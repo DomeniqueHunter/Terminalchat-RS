@@ -290,7 +290,7 @@ impl Pager {
             let bar = "\u{2500}".repeat(RULE_WIDTH);
             let text = format!("{bar} {} {bar}", block.day);
             let padding = width.saturating_sub(crate::rows::text_width(&text)) / 2;
-            let segs = vec![Seg::new(format!("{}{text}", " ".repeat(padding)), dim())];
+            let segs = vec![Seg::new(format!("{}{text}", " ".repeat(padding)), crate::style::color("rule"))];
             rows.push(Row { segs, key: None, kind: RowKind::Rule, images: Vec::new(), slots: Vec::new() });
         }
         for (offset, line) in block.lines.iter().enumerate() {

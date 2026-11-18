@@ -63,6 +63,49 @@ Without a complete `config.json` a login screen appears. `/help` lists commands,
 - `/gif [on|off]` switches GIF animation (config `eicon_animate`), The cell size is measured once at start; if the measurement is wrong (SSH, tmux), set `cell_size` in config.json, e.g. `"8x18"` (pixels per cell). After zooming the font, restart the client. Animation runs only for visible images and pauses while the tmux client is detached.
 - Cache: `~/.cache/terminalchat/{eicons,avatars,thumbs}` (same as the Python version), refreshed after `eicon_max_age_hours`.
 
+
+## Colors
+
+All colors can be changed in the block `colors` of `config.json`. Only the entries that differ from the defaults are needed; the Python version keeps the block when it saves the config. A style is written like in the Python version: `bold`, `dim`, `italic`, `underline`, `strike`, `reverse`, a color `#rrggbb` and a background `on #rrggbb`. Entries that cannot be read are reported at start and keep their default.
+
+Backgrounds (`#rrggbb`, or `""` for the terminal's own background, e.g. to keep a transparent background). Like the Python version every cell gets an explicit background by default; with the terminal background Konsole may leave pieces of images that are gone standing in empty cells.
+
+```json
+"colors": {
+    "background": "#121212",
+    "surface": "#1e1e1e",
+    "panel": "#242f38",
+    "status_box": "#242f38",
+    "status_field": "#1e1e1e",
+
+    "user": "bold #008080",
+    "icon": "bold #008080",
+    "eicon": "#af5fd7",
+    "url": "underline #5f87ff",
+    "sender": "bold",
+    "spoiler": "reverse",
+    "op": "dim",
+    "channel_link": "bold #5fafff",
+    "rule": "dim",
+    "quote": "dim",
+    "online": "#5fd75f",
+    "offline": "#d75f5f",
+    "focus": "#5f87d7",
+    "information": "#5f87d7",
+    "warning": "#d7af5f",
+    "error": "#d75f5f",
+    "ad": "#d7af5f",
+    "footer": "on #1f2d4a",
+    "footer_key": "bold #ffb000",
+
+    "status": {"looking": "#55ff55", "online": "#008080", "idle": "#a8a8a8", "away": "#a8a8a8", "busy": "#ffaf00", "dnd": "#ff5555", "crown": "#ffff55"},
+    "gender": {"male": "#6699ff", "female": "#ff6699", "transgender": "#ee8822", "herm": "#9b30ff", "male-herm": "#007fff", "cunt-boy": "#00cc66", "shemale": "#cc66ff", "none": "#ffffbb"},
+    "bbcode": {"red": "#ff5555", "blue": "#5f87ff", "white": "#ffffff", "yellow": "#ffff55", "pink": "#ff87d7", "gray": "#a8a8a8", "green": "#55ff55", "orange": "#ffaf00", "purple": "#af5fff", "black": "#5f5f5f", "brown": "#af8700", "cyan": "#55ffff"}
+}
+```
+
+`surface` is the input field, `panel` popups and toasts, `status_box` and `status_field` the status message box and its text field, `focus` the border of the focused panel, `ad` the input border in ad mode, `footer` the key bar. `NO_COLOR` turns all colors off but keeps the attributes.
+
 ## GitHub Actions
 
 `.github/workflows/ci.yml` runs clippy and the tests on x86_64 and ARM64 for every push and pull request. A tag like `v0.1.0` additionally builds both binaries and attaches `terminalchat-x86_64` and `terminalchat-aarch64` to a GitHub release (built on Ubuntu 22.04, so they also run on Raspberry Pi OS Bookworm). On the Pi, `./setup.sh --download` fetches the binary of the latest release instead of building.

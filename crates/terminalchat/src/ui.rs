@@ -16,7 +16,7 @@ use crate::rows::{char_width, text_width, wrap};
 use crate::sanitize::html_unescape;
 use crate::screens::Screen;
 use crate::store::{CHANNEL, CONSOLE, USER};
-use crate::style::{bold, dim, fg, on, reversed, status_style, status_symbol};
+use crate::style::{bold, color, dim, reversed, status_style, status_symbol};
 
 const LIST_WIDTH: u16 = 26;
 const SIDEBAR_WIDTH: u16 = 26;
@@ -92,13 +92,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     app.images.end_frame();
     app.images.draw_erased(frame);
+    crate::colors::apply_background(frame.buffer_mut());
 }
 
 // ------------------------------------------------------------------ title
 
 fn draw_title(frame: &mut Frame, app: &mut App, area: Rect) {
     app.regions.title = area;
-    let online = if app.online { fg(crate::style::rgb(0x5fd75f)) } else { fg(crate::style::rgb(0xd75f5f)) };
+    let online = if app.online { color("online") } else { color("offline") };
     let line = Line::from(vec![
         Span::styled(format!(" {TITLE} "), bold()),
         Span::styled("\u{2014} ", dim()),
@@ -160,7 +161,7 @@ fn draw_chat_list(frame: &mut Frame, app: &mut App, area: Rect) {
         app.regions.chats.push((rect(inner.x, inner.y + (row - start) as u16, inner.width, 1), id.clone()));
         lines.push(Line::from(Span::styled(label, style)));
     }
-    let border = if app.focus == Focus::List { fg(crate::style::rgb(0x5f87d7)) } else { dim() };
+    let border = if app.focus == Focus::List { color("focus") } else { dim() };
     let block = Block::default().borders(Borders::RIGHT).border_style(border);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -282,7 +283,7 @@ fn draw_strip(frame: &mut Frame, app: &mut App, items: &[(Key, Option<String>)],
 // ------------------------------------------------------------------ sidebar
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
-    let border = if app.focus == Focus::Sidebar { fg(crate::style::rgb(0x5f87d7)) } else { dim() };
+    let border = if app.focus == Focus::Sidebar { color("focus") } else { dim() };
     let block = Block::default().borders(Borders::LEFT).border_style(border);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -317,7 +318,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(format!("{} ", status_symbol(status)), status_style(status)),
             Span::styled(label, if selected { app.name_style(name).patch(reversed()) } else { app.name_style(name) }),
-            Span::styled(marker.to_string(), dim()),
+            Span::styled(marker.to_string(), color("op")),
         ]));
     };
     match app.sidebar_tab {
@@ -413,13 +414,14 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, lines: Vec<String>, 
     let border = if app.focus != Focus::Input {
         dim()
     } else if app.input_mode == InputMode::Ads {
-        fg(crate::style::rgb(0xd7af5f))
+        color("ad")
     } else {
         Style::default()
     };
     let block = Block::default().borders(Borders::ALL).border_style(border).title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    crate::colors::fill(frame, inner, "surface");
 
     let visible = inner.height as usize;
     let first = (cursor.0 + 1).saturating_sub(visible);
@@ -497,8 +499,8 @@ fn highlight_selection(frame: &mut Frame, app: &App) {
 // ------------------------------------------------------------------ footer
 
 fn draw_footer(frame: &mut Frame, app: &mut App, area: Rect) {
-    let bar = on(crate::style::rgb(0x1f2d4a));
-    let key_style = bar.patch(fg(crate::style::rgb(0xffb000))).patch(bold());
+    let bar = color("footer");
+    let key_style = bar.patch(color("footer_key"));
     let mut x = area.x;
     let mut parts = Vec::new();
     for (key, label) in FOOTER_KEYS {
@@ -581,17 +583,18 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
         if height < 3 {
             break;
         }
-        let color = match toast.severity {
-            Severity::Information => crate::style::rgb(0x5f87d7),
-            Severity::Warning => crate::style::rgb(0xd7af5f),
-            Severity::Error => crate::style::rgb(0xd75f5f),
+        let border = match toast.severity {
+            Severity::Information => color("information"),
+            Severity::Warning => color("warning"),
+            Severity::Error => color("error"),
         };
         let toast_area = rect(area.x + area.width - width - 1, y, width, height);
-        let mut block = Block::default().borders(Borders::ALL).border_style(fg(color));
+        let mut block = Block::default().borders(Borders::ALL).border_style(border);
         if !toast.title.is_empty() {
             block = block.title(Span::styled(format!(" {} ", toast.title), bold()));
         }
         frame.render_widget(Clear, toast_area);
+        crate::colors::fill(frame, toast_area, "panel");
         frame.render_widget(Paragraph::new(lines.iter().map(|row| spans(row)).collect::<Vec<_>>()).block(block), toast_area);
         y += height;
     }
@@ -621,7 +624,8 @@ fn draw_lines(frame: &mut Frame, app: &mut App, area: Rect, lines: &[Vec<Seg>], 
 
 fn modal(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     frame.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).border_style(fg(crate::style::rgb(0x5f87d7))).title(Span::styled(format!(" {title} "), bold()));
+    crate::colors::fill(frame, area, "panel");
+    let block = Block::default().borders(Borders::ALL).border_style(color("focus")).title(Span::styled(format!(" {title} "), bold()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     inner
@@ -650,7 +654,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
                 field("Password", "*".repeat(login.password.chars().count()), login.focus == 1),
                 Line::from(vec![Span::raw("           "), Span::styled(remember, if login.focus == 2 { reversed() } else { Style::default() })]),
                 Line::default(),
-                Line::from(Span::styled(login.message.clone(), fg(crate::style::rgb(0xd7af5f)))),
+                Line::from(Span::styled(login.message.clone(), color("warning"))),
             ];
             frame.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), inner);
             footer(frame, outer, "tab: next field, enter: log in, space: toggle");
@@ -681,7 +685,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             let inner = modal(frame, outer, &format!("Profile: {}", profile.character));
             let lines = match &profile.result {
                 None => vec![PItem::Text(vec![Seg::new("Loading...", dim())])],
-                Some(Err(error)) => vec![PItem::Text(vec![Seg::new(error.clone(), fg(crate::style::rgb(0xd75f5f)))])],
+                Some(Err(error)) => vec![PItem::Text(vec![Seg::new(error.clone(), color("error"))])],
                 Some(Ok(data)) => profile_lines(app, data),
             };
             let body = rect(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
@@ -760,6 +764,9 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             }
             let outer = centered(area, 64, (lines.len() as u16 + 4).min(area.height));
             let inner = modal(frame, outer, &edit.title.clone());
+            crate::colors::fill(frame, outer, "status_box");
+            let field = rect(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), (lines.len() as u16).min(inner.height.saturating_sub(1)));
+            crate::colors::fill(frame, field, "status_field");
             for (row, line) in lines.iter().enumerate() {
                 frame.render_widget(Paragraph::new(line.clone()), rect(inner.x + 1, inner.y + 1 + row as u16, inner.width.saturating_sub(2), 1));
             }

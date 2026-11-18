@@ -11,7 +11,6 @@ use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, ImageFormat, RgbaImage};
 use ratatui::buffer::CellDiffOption;
 use ratatui::layout::{Rect, Size};
-use ratatui::style::Color;
 use ratatui::Frame;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
@@ -29,10 +28,12 @@ pub const THUMB_ROWS: u16 = 8;
 pub const THUMB_COLUMNS: usize = 5;
 const MAX_MEMORY_IMAGES: usize = 100;
 const MAX_FRAMES: usize = 60;
-/// More animated images than this on screen: none of them animates (saves bandwidth, e.g. over SSH).
 const TMUX_START: &str = "\x1bPtmux;";
+/// More animated images than this on screen: none of them animates (saves bandwidth, e.g. over SSH).
 const MAX_ANIMATED: usize = 12;
-const MIN_FRAME_MILLIS: u32 = 100;
+/// Frame times like the Python version: missing or below 20 ms means 100 ms, never below 50 ms.
+const DEFAULT_FRAME_MILLIS: u32 = 100;
+const MIN_FRAME_MILLIS: u32 = 50;
 const MAX_ASPECT: u32 = 4;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_FONT: (u16, u16) = (10, 20);
@@ -181,7 +182,6 @@ pub struct ImageStore {
     areas: Vec<Rect>,
     last_areas: Vec<Rect>,
     erase: bool,
-    repaint: Vec<Rect>,
     pane: (u16, u16),
     visible: HashSet<Key>,
     animating: HashSet<Key>,
@@ -300,7 +300,6 @@ impl ImageStore {
             areas: Vec::new(),
             last_areas: Vec::new(),
             erase: false,
-            repaint: Vec::new(),
             pane: (0, 0),
             visible: HashSet::new(),
             animating: HashSet::new(),
@@ -436,44 +435,18 @@ impl ImageStore {
         self.areas.clear();
     }
 
-    /// Erases the places of images that are gone. Text written over a Sixel image does not remove
-    /// its pixels, so the area is erased with the same sequence the library puts in front of an
-    /// image. Call at the end of a frame, after `end_frame`.
+    /// Writes every cell once more when an image is gone. With an explicit background color the
+    /// terminal paints the cell over the old image pixels, but cells whose text did not change
+    /// would not be written at all. Call at the end of a frame, after `end_frame`.
     pub fn draw_erased(&mut self, frame: &mut Frame) {
-        // The frame before wrote nothing but blank cells, so every cell that an image does not own
-        // is written again now.
-        for area in std::mem::take(&mut self.repaint) {
-            for y in area.top()..area.bottom() {
-                for x in area.left()..area.right() {
-                    let Some(cell) = frame.buffer_mut().cell_mut((x, y)) else { continue };
-                    if matches!(cell.diff_option, CellDiffOption::None) {
-                        cell.set_diff_option(CellDiffOption::AlwaysUpdate);
-                    }
-                }
-            }
-        }
         if !std::mem::take(&mut self.erase) {
             return;
         }
-        let Some(picker) = &self.picker else { return };
-        if picker.protocol_type() != ProtocolType::Sixel {
-            return;
-        }
-        // Konsole paints over Sixel pixels only for cells with a background color of their own,
-        // the default background leaves them standing. So the screen is written once with blank
-        // cells in an explicit color (ANSI black follows the color scheme), the text follows in
-        // the next frame.
-        let area = frame.area();
-        let buffer = frame.buffer_mut();
-        for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                let Some(cell) = buffer.cell_mut((x, y)) else { continue };
-                cell.reset();
-                cell.set_bg(Color::Black);
+        for cell in &mut frame.buffer_mut().content {
+            if matches!(cell.diff_option, CellDiffOption::None) {
                 cell.set_diff_option(CellDiffOption::AlwaysUpdate);
             }
         }
-        self.repaint = vec![area];
     }
 
     /// Where the tmux pane sits in the terminal, for the absolute position of an image.
@@ -481,18 +454,10 @@ impl ImageStore {
         self.pane = (left, top);
     }
 
-    /// True while cells of an erased area still wait for their text.
-    pub fn needs_repaint(&self) -> bool {
-        !self.repaint.is_empty()
-    }
-
     pub fn end_frame(&mut self) {
         self.visible = std::mem::take(&mut self.drawn);
-        // Only where nothing is drawn now: an image that moved overlaps its old place, and the
-        // erase would cut a hole into the image that was just drawn.
-        // Text alone does not remove the pixels of a Sixel image, and the places an image leaves
-        // behind are hard to pin down to the cell. The whole screen is erased instead and written
-        // again in the next frame, which happens rarely enough: only when an image is gone.
+        // The places an image leaves behind are hard to pin down to the cell, so the whole screen
+        // is written again, which happens rarely enough: only when an image is gone.
         self.erase = self.last_areas.iter().any(|area| !self.areas.contains(area));
         self.last_areas = std::mem::take(&mut self.areas);
         let candidates: HashSet<Key> = self
@@ -722,8 +687,8 @@ pub fn decode(bytes: &[u8], max_width: u32, max_height: u32, fill: bool) -> Opti
         for frame in decoder.into_frames().take(MAX_FRAMES) {
             let frame = frame.ok()?;
             let (numerator, denominator) = frame.delay().numer_denom_ms();
-            let millis = numerator.checked_div(denominator).unwrap_or(100);
-            let millis = if millis < 20 { 100 } else { millis.max(MIN_FRAME_MILLIS) };
+            let millis = numerator.checked_div(denominator).unwrap_or(DEFAULT_FRAME_MILLIS);
+            let millis = if millis < 20 { DEFAULT_FRAME_MILLIS } else { millis.max(MIN_FRAME_MILLIS) };
             frames.push((flatten_and_fit(frame.into_buffer(), max_width, max_height, fill), Duration::from_millis(u64::from(millis))));
         }
     } else {
@@ -903,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gone_image_has_the_screen_erased_but_a_staying_one_does_not() {
+    fn a_gone_image_has_every_cell_written_again() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut store = ImageStore::new(tx);
         let mut picker = Picker::halfblocks();
@@ -912,8 +877,10 @@ mod tests {
         let key = Key::new(Kind::Eicon, "cat");
         store.slots.insert(key.clone(), Slot::Loading);
         store.on_loaded(key.clone(), Some(vec![(RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100))]));
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3)).unwrap();
-        let frame = |store: &mut ImageStore, terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>, shown: bool| -> String {
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 4, 3));
+        let mut forced = |store: &mut ImageStore, shown: bool| -> usize {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3)).unwrap();
+            let mut count = 0;
             terminal
                 .draw(|frame| {
                     store.begin_frame();
@@ -922,19 +889,14 @@ mod tests {
                     }
                     store.end_frame();
                     store.draw_erased(frame);
+                    buffer = frame.buffer_mut().clone();
+                    count = buffer.content.iter().filter(|cell| matches!(cell.diff_option, CellDiffOption::AlwaysUpdate)).count();
                 })
                 .unwrap();
-            terminal.backend().buffer().cell((0, 0)).unwrap().symbol().to_string()
+            count
         };
-        frame(&mut store, &mut terminal, true);
-        assert!(!store.erase, "the image is still there");
-        frame(&mut store, &mut terminal, false);
-        let buffer = terminal.backend().buffer().clone();
-        for (x, y) in [(0, 0), (1, 1), (3, 2)] {
-            let cell = buffer.cell((x, y)).unwrap();
-            assert_eq!((cell.symbol(), cell.bg), (" ", Color::Black), "the whole screen is blanked in an explicit color");
-        }
-        assert!(store.needs_repaint(), "the text follows in the next frame");
+        assert_eq!(forced(&mut store, true), 0, "the image is still there");
+        assert_eq!(forced(&mut store, false), 12, "every cell is written again");
     }
 
     #[test]
@@ -943,5 +905,20 @@ mod tests {
         assert_eq!(placed, "\x1bPtmux;\x1b\x1b[6;3H\x1b\x1b[4Xrest");
         let shifted = with_position("\x1bPtmux;body", Rect::new(0, 0, 1, 1), (10, 3));
         assert_eq!(shifted, "\x1bPtmux;\x1b\x1b[4;11Hbody");
+    }
+
+    #[test]
+    fn gif_frames_keep_their_own_time_like_in_python() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            let frames = [40, 10, 70].map(|millis| {
+                image::Frame::from_parts(RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255])), 0, 0, image::Delay::from_numer_denom_ms(millis, 1))
+            });
+            encoder.encode_frames(frames).unwrap();
+        }
+        let frames = decode(&bytes, 8, 8, false).unwrap();
+        let millis: Vec<u128> = frames.iter().map(|(_, delay)| delay.as_millis()).collect();
+        assert_eq!(millis, vec![50, 100, 70]);
     }
 }

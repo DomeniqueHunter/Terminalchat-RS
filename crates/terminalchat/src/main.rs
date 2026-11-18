@@ -1,5 +1,6 @@
 mod app;
 mod bbcode;
+mod colors;
 mod commands;
 mod config;
 mod events;
@@ -103,6 +104,10 @@ async fn run(config: Config) -> std::io::Result<()> {
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
     let picker = images::detect_picker(&app.config);
     app.images.configure(picker, &app.config);
+    colors::init(app.config.colors.as_ref());
+    if !colors::palette().errors.is_empty() {
+        app.warn(format!("Colors in config.json not understood: {}", colors::palette().errors.join(", ")));
+    }
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -114,9 +119,6 @@ async fn run(config: Config) -> std::io::Result<()> {
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        if app.images.needs_repaint() {
-            terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        }
         for sequence in app.osc_queue.drain(..) {
             let mut out = stdout();
             out.write_all(sequence.as_bytes())?;
