@@ -11,9 +11,9 @@ use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, ImageFormat, RgbaImage};
 use ratatui::buffer::CellDiffOption;
 use ratatui::layout::{Rect, Size};
+use ratatui::style::Color;
 use ratatui::Frame;
 use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::sixel::Sixel;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FontSize, Image, Resize};
 use tokio::sync::mpsc::UnboundedSender;
@@ -180,7 +180,7 @@ pub struct ImageStore {
     drawn: HashSet<Key>,
     areas: Vec<Rect>,
     last_areas: Vec<Rect>,
-    erase: Vec<Rect>,
+    erase: bool,
     repaint: Vec<Rect>,
     pane: (u16, u16),
     visible: HashSet<Key>,
@@ -299,7 +299,7 @@ impl ImageStore {
             drawn: HashSet::new(),
             areas: Vec::new(),
             last_areas: Vec::new(),
-            erase: Vec::new(),
+            erase: false,
             repaint: Vec::new(),
             pane: (0, 0),
             visible: HashSet::new(),
@@ -440,29 +440,40 @@ impl ImageStore {
     /// its pixels, so the area is erased with the same sequence the library puts in front of an
     /// image. Call at the end of a frame, after `end_frame`.
     pub fn draw_erased(&mut self, frame: &mut Frame) {
-        // The erase of the frame before took the text of those cells with it: they carry the right
-        // content but were skipped, so the diff of this frame would not write them.
+        // The frame before wrote nothing but blank cells, so every cell that an image does not own
+        // is written again now.
         for area in std::mem::take(&mut self.repaint) {
             for y in area.top()..area.bottom() {
                 for x in area.left()..area.right() {
-                    if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                    let Some(cell) = frame.buffer_mut().cell_mut((x, y)) else { continue };
+                    if matches!(cell.diff_option, CellDiffOption::None) {
                         cell.set_diff_option(CellDiffOption::AlwaysUpdate);
                     }
                 }
             }
         }
-        let areas = std::mem::take(&mut self.erase);
+        if !std::mem::take(&mut self.erase) {
+            return;
+        }
         let Some(picker) = &self.picker else { return };
         if picker.protocol_type() != ProtocolType::Sixel {
             return;
         }
-        let is_tmux = picker.tmux_detected();
-        let pane = self.pane;
-        for area in &areas {
-            let protocol = erase_protocol(*area, is_tmux, pane);
-            frame.render_widget(Image::new(&protocol), *area);
+        // Konsole paints over Sixel pixels only for cells with a background color of their own,
+        // the default background leaves them standing. So the screen is written once with blank
+        // cells in an explicit color (ANSI black follows the color scheme), the text follows in
+        // the next frame.
+        let area = frame.area();
+        let buffer = frame.buffer_mut();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                let Some(cell) = buffer.cell_mut((x, y)) else { continue };
+                cell.reset();
+                cell.set_bg(Color::Black);
+                cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
         }
-        self.repaint = areas;
+        self.repaint = vec![area];
     }
 
     /// Where the tmux pane sits in the terminal, for the absolute position of an image.
@@ -479,13 +490,10 @@ impl ImageStore {
         self.visible = std::mem::take(&mut self.drawn);
         // Only where nothing is drawn now: an image that moved overlaps its old place, and the
         // erase would cut a hole into the image that was just drawn.
-        self.erase = self
-            .last_areas
-            .iter()
-            .filter(|area| area.width > 0 && area.height > 0)
-            .filter(|area| !self.areas.iter().any(|drawn| drawn.intersects(**area)))
-            .copied()
-            .collect();
+        // Text alone does not remove the pixels of a Sixel image, and the places an image leaves
+        // behind are hard to pin down to the cell. The whole screen is erased instead and written
+        // again in the next frame, which happens rarely enough: only when an image is gone.
+        self.erase = self.last_areas.iter().any(|area| !self.areas.contains(area));
         self.last_areas = std::mem::take(&mut self.areas);
         let candidates: HashSet<Key> = self
             .visible
@@ -612,25 +620,6 @@ fn with_position(data: &str, area: Rect, pane: (u16, u16)) -> String {
     format!("{TMUX_START}\x1b\x1b[{row};{column}H{body}")
 }
 
-/// An image-less Sixel protocol that only carries the erase sequence for its area.
-fn erase_protocol(area: Rect, is_tmux: bool, pane: (u16, u16)) -> Protocol {
-    let (width, height) = (area.width, area.height);
-    let (start, escape, end) = if is_tmux { (TMUX_START, "\x1b\x1b", "\x1b\\") } else { ("", "\x1b", "") };
-    let mut data = String::from(start);
-    if height == 1 {
-        data.push_str(&format!("{escape}[{width}X"));
-    } else {
-        for _ in 0..height {
-            data.push_str(&format!("{escape}[{width}X{escape}[1B"));
-        }
-        data.push_str(&format!("{escape}[{height}A"));
-    }
-    data.push_str(end);
-    if is_tmux {
-        data = with_position(&data, area, pane);
-    }
-    Protocol::Sixel(Sixel { data, size: Size::new(width, height), is_tmux })
-}
 
 /// Removes the erase sequence in front of the Sixel data (not inside tmux passthrough).
 fn strip_erase(protocol: &mut Protocol) {
@@ -914,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gone_image_gets_its_area_erased() {
+    fn a_gone_image_has_the_screen_erased_but_a_staying_one_does_not() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut store = ImageStore::new(tx);
         let mut picker = Picker::halfblocks();
@@ -923,60 +912,29 @@ mod tests {
         let key = Key::new(Kind::Eicon, "cat");
         store.slots.insert(key.clone(), Slot::Loading);
         store.on_loaded(key.clone(), Some(vec![(RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100))]));
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 5)).unwrap();
-        let area = Rect::new(1, 1, 2, 2);
-        terminal
-            .draw(|frame| {
-                store.begin_frame();
-                store.render(frame, &key, area);
-                store.end_frame();
-                store.draw_erased(frame);
-            })
-            .unwrap();
-        terminal
-            .draw(|frame| {
-                store.begin_frame();
-                store.end_frame();
-                store.draw_erased(frame);
-            })
-            .unwrap();
-        let cell = terminal.backend().buffer().cell((1, 1)).unwrap().symbol().to_string();
-        assert_eq!(cell, "\x1b[2X\x1b[1B\x1b[2X\x1b[1B\x1b[2A");
-    }
-
-    #[test]
-    fn an_image_that_moved_does_not_erase_its_new_place() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut store = ImageStore::new(tx);
-        let mut picker = Picker::halfblocks();
-        picker.set_protocol_type(ProtocolType::Sixel);
-        store.picker = Some(picker);
-        let key = Key::new(Kind::Eicon, "cat");
-        store.slots.insert(key.clone(), Slot::Loading);
-        store.on_loaded(key.clone(), Some(vec![(RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100))]));
-        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 6)).unwrap();
-        for row in [3, 2] {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3)).unwrap();
+        let frame = |store: &mut ImageStore, terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>, shown: bool| -> String {
             terminal
                 .draw(|frame| {
                     store.begin_frame();
-                    store.render(frame, &key, Rect::new(1, row, 2, 2));
+                    if shown {
+                        store.render(frame, &key, Rect::new(1, 1, 2, 2));
+                    }
                     store.end_frame();
                     store.draw_erased(frame);
                 })
                 .unwrap();
+            terminal.backend().buffer().cell((0, 0)).unwrap().symbol().to_string()
+        };
+        frame(&mut store, &mut terminal, true);
+        assert!(!store.erase, "the image is still there");
+        frame(&mut store, &mut terminal, false);
+        let buffer = terminal.backend().buffer().clone();
+        for (x, y) in [(0, 0), (1, 1), (3, 2)] {
+            let cell = buffer.cell((x, y)).unwrap();
+            assert_eq!((cell.symbol(), cell.bg), (" ", Color::Black), "the whole screen is blanked in an explicit color");
         }
-        assert!(store.erase.is_empty(), "the new place overlaps the old one");
-        terminal
-            .draw(|frame| {
-                store.begin_frame();
-                store.render(frame, &key, Rect::new(6, 0, 2, 2));
-                store.end_frame();
-                store.draw_erased(frame);
-            })
-            .unwrap();
-        assert_eq!(store.erase, Vec::new());
-        let cell = terminal.backend().buffer().cell((1, 2)).unwrap().symbol().to_string();
-        assert_eq!(cell, "\x1b[2X\x1b[1B\x1b[2X\x1b[1B\x1b[2A", "the place it left is erased");
+        assert!(store.needs_repaint(), "the text follows in the next frame");
     }
 
     #[test]

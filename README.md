@@ -57,7 +57,7 @@ Without a complete `config.json` a login screen appears. `/help` lists commands,
 ## Images
 
 - Needs `"eicons": "inline"` in `config.json` and a terminal with graphics (Sixel, Kitty or iTerm2). The terminal is asked at start; inside tmux the launcher enables `allow-passthrough`.
-- `TERMINALCHAT_IMAGES=off|sixel|kitty|iterm2` overrides the detection. The `terminalchat` launcher sets `sixel` unless the variable is already set. A tmux session that is already running keeps its old environment: stop it first (`tmux -L terminalchat kill-server`).
+- `TERMINALCHAT_IMAGES=off|sixel|kitty|iterm2` overrides the detection. The `terminalchat` launcher sets `sixel` unless the variable is already set. A tmux session that is already running keeps its old environment: stop it first (`./kill-tmux.sh`).
 - In tmux the images are sent past tmux straight to the terminal. `TERMINALCHAT_TMUX_NATIVE=1` lets tmux draw them instead: it then places and clears them itself, but scales them down and redraws them more slowly.
 - Eicons and icons of a message appear in a strip below the message (`eicon_height` rows). Click an image to copy its link. The profile shows the avatar on top and thumbnails in the Images section; click a thumbnail to copy the link of the full image.
 - `/gif [on|off]` switches GIF animation (config `eicon_animate`), The cell size is measured once at start; if the measurement is wrong (SSH, tmux), set `cell_size` in config.json, e.g. `"8x18"` (pixels per cell). After zooming the font, restart the client. Animation runs only for visible images and pauses while the tmux client is detached.
