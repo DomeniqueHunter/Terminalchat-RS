@@ -3,10 +3,12 @@ set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 MIN_RUST="1.86"
+LINK_PATH="${HOME}/.local/bin/terminalchat"
 
 SKIP_PACKAGES=0
 SKIP_RUST=0
 SKIP_BUILD=0
+SKIP_LINK=0
 ASSUME_YES=0
 
 usage() {
@@ -15,12 +17,14 @@ Usage: ./setup.sh [options]
 
 Installs system packages (tmux, C compiler, curl), the Rust toolchain
 (via rustup, if cargo is missing or too old) and builds the client with
-./build.sh for this machine.
+./build.sh for this machine and links the launcher to ~/.local/bin/terminalchat
+so that you can start it from anywhere with 'terminalchat'.
 
 Options:
   --skip-packages   do not install system packages
   --skip-rust       do not install or update Rust
   --skip-build      do not build, only prepare
+  --skip-link       do not link the launcher into ~/.local/bin
   -y, --yes         do not ask before installing anything
   -h, --help        show this help
 EOF
@@ -41,6 +45,7 @@ parse_args() {
             --skip-packages) SKIP_PACKAGES=1 ;;
             --skip-rust) SKIP_RUST=1 ;;
             --skip-build) SKIP_BUILD=1 ;;
+            --skip-link) SKIP_LINK=1 ;;
             -y|--yes) ASSUME_YES=1 ;;
             -h|--help) usage; exit 0 ;;
             *) usage >&2; fail "unknown option: $1" ;;
@@ -154,13 +159,44 @@ build() {
     "${BASE_DIR}/build.sh"
 }
 
+link_launcher() {
+    local launcher="${BASE_DIR}/terminalchat"
+    local current
+
+    if [[ -L "${LINK_PATH}" ]]; then
+        current="$(readlink -f "${LINK_PATH}" || true)"
+        if [[ "${current}" == "${launcher}" ]]; then
+            info "Link ${LINK_PATH} is already set"
+            return
+        fi
+        info "${LINK_PATH} currently points to ${current:-a missing file}"
+        if ! ask "Point it to ${launcher}?"; then
+            info "Keeping the existing link"
+            return
+        fi
+        ln -sfn "${launcher}" "${LINK_PATH}"
+    elif [[ -e "${LINK_PATH}" ]]; then
+        info "${LINK_PATH} exists and is not a link - not touching it"
+        return
+    else
+        mkdir -p "$(dirname "${LINK_PATH}")"
+        ln -s "${launcher}" "${LINK_PATH}"
+    fi
+    info "Linked ${LINK_PATH} -> ${launcher}"
+
+    case ":${PATH}:" in
+        *":$(dirname "${LINK_PATH}"):"*) ;;
+        *) info "$(dirname "${LINK_PATH}") is not in your PATH - add it to ~/.profile to use 'terminalchat' everywhere" ;;
+    esac
+}
+
 check_result() {
     if command -v tmux >/dev/null 2>&1; then
         info "tmux: $(tmux -V)"
     else
         info "tmux not installed - the client works, but /minimize is unavailable"
     fi
-    info "Done. Start the client with: ./terminalchat"
+    info "Done. Start the client with: terminalchat (or ./terminalchat)"
 }
 
 main() {
@@ -177,6 +213,9 @@ main() {
     if [[ "${SKIP_BUILD}" -eq 0 ]]; then
         command -v cargo >/dev/null 2>&1 || fail "cargo not found (run without --skip-rust)"
         build
+    fi
+    if [[ "${SKIP_LINK}" -eq 0 ]]; then
+        link_launcher
     fi
     check_result
 }

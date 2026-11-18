@@ -13,6 +13,8 @@ DO_CONFIG=1
 DO_DATA=1
 DO_LOGS=0
 DO_CACHE=1
+DO_LINK=1
+LINK_PATH="${HOME}/.local/bin/${APP_NAME}"
 
 TARGETS=()
 LOG_FILES=()
@@ -34,11 +36,13 @@ Components (only the given ones are deleted):
   --data          all data: chat logs, pins, status, ad texts, genders
   --logs          only chat logs, keep pins, status etc.
   --cache         cache (profile field mapping)
+  --link          the link ~/.local/bin/terminalchat, if it points to this folder
 
 Options:
   --keep-config   keep the configuration
   --keep-data     keep chat logs and data
   --keep-cache    keep the cache
+  --keep-link     keep the link in ~/.local/bin
   --build         also delete target/ and the binaries in build/
                   (run ./build.sh or ./setup.sh to build again)
   -n, --dry-run   only show what would be deleted
@@ -68,12 +72,14 @@ select_component() {
         DO_DATA=0
         DO_LOGS=0
         DO_CACHE=0
+        DO_LINK=0
     fi
     case "$1" in
         config) DO_CONFIG=1 ;;
         data) DO_DATA=1 ;;
         logs) DO_LOGS=1 ;;
         cache) DO_CACHE=1 ;;
+        link) DO_LINK=1 ;;
     esac
 }
 
@@ -87,6 +93,8 @@ parse_args() {
             --keep-config) DO_CONFIG=0 ;;
             --keep-data) DO_DATA=0 ;;
             --keep-cache) DO_CACHE=0 ;;
+            --keep-link) DO_LINK=0 ;;
+            --link) select_component link ;;
             --build) REMOVE_BUILD=1 ;;
             -n|--dry-run) DRY_RUN=1 ;;
             -y|--yes) ASSUME_YES=1 ;;
@@ -189,6 +197,12 @@ collect_cache() {
     add_target "${XDG_CACHE_HOME:-${HOME}/.cache}/${APP_NAME}"
 }
 
+collect_link() {
+    [[ -L "${LINK_PATH}" ]] || return 0
+    [[ "$(readlink -f "${LINK_PATH}")" == "${BASE_DIR}/terminalchat" ]] || return 0
+    add_target "${LINK_PATH}"
+}
+
 collect_build() {
     local file
     add_target "${BASE_DIR}/target"
@@ -270,6 +284,7 @@ main() {
     [[ ${DO_DATA} -eq 1 ]] && collect_data "${custom}"
     [[ ${DO_LOGS} -eq 1 ]] && collect_logs "${custom}"
     [[ ${DO_CACHE} -eq 1 ]] && collect_cache
+    [[ ${DO_LINK} -eq 1 ]] && collect_link
     [[ ${REMOVE_BUILD} -eq 1 ]] && collect_build
 
     if [[ ${#TARGETS[@]} -eq 0 && ${#LOG_FILES[@]} -eq 0 ]]; then

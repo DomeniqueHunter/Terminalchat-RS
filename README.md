@@ -11,10 +11,21 @@ Status: complete client (chat, channels, private chats, ads, moderation, profile
 |---|---|
 | `crates/fchat` | Protocol library: opcodes, login. See its README |
 | `crates/terminalchat` | The client: config, paths, later store, BBCode, commands, TUI |
+| `setup.sh` | Installs tmux, C compiler and Rust (rustup) and builds for this machine |
+| `purge.sh` | Deletes config, data, logs, cache (and with `--build` target/ and binaries) |
+| `usage.sh` | One-shot: date, PID, RSS, CPU%, MEM%, runtime of the running client |
+| `bench.sh` | Measures memory and CPU of the running client (also `--python`), one line per sample with date and time |
 | `build.sh` | Release build (`native`, `arm64`, `all`) and `clean` |
 | `terminalchat` | tmux launcher (`/minimize` detaches, client keeps running) |
 | `tmux.conf` | tmux settings used by the launcher |
 | `build/` | Output of `build.sh` |
+
+## Install
+
+```bash
+./setup.sh          # packages, Rust, build, link to ~/.local/bin/terminalchat; -y: no questions
+./purge.sh -n       # show what would be deleted (shared with the Python version!)
+```
 
 ## Build
 
