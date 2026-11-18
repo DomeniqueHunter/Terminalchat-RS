@@ -75,8 +75,8 @@ Backgrounds (`#rrggbb`, or `""` for the terminal's own background, e.g. to keep 
     "background": "#121212",
     "surface": "#1e1e1e",
     "panel": "#242f38",
-    "status_box": "#242f38",
-    "status_field": "#1e1e1e",
+    "status_box": "#121212",
+    "status_field": "#121212",
 
     "user": "bold #008080",
     "icon": "bold #008080",

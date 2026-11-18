@@ -22,8 +22,8 @@ const BACKGROUNDS: [(&str, &str); 5] = [
     ("background", "#121212"),
     ("surface", "#1e1e1e"),
     ("panel", "#242f38"),
-    ("status_box", "#242f38"),
-    ("status_field", "#1e1e1e"),
+    ("status_box", "#121212"),
+    ("status_field", "#121212"),
 ];
 
 const STYLES: [(&str, &str); 19] = [
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(palette.style("user"), parse_style("bold #008080").unwrap());
         assert_eq!(palette.status("busy"), Style::default().fg(Color::Rgb(0, 0, 1)));
         assert_eq!(palette.style("eicon"), parse_style("#af5fd7").unwrap());
-        assert_eq!(palette.background("status_box"), Some(Color::Rgb(0x24, 0x2f, 0x38)));
+        assert_eq!(palette.background("status_box"), Some(Color::Rgb(0x12, 0x12, 0x12)));
         assert_eq!(palette.errors.len(), 3);
     }
 
