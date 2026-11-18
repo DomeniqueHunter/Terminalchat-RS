@@ -27,6 +27,9 @@ pub const THUMB_ROWS: u16 = 8;
 pub const THUMB_COLUMNS: usize = 5;
 const MAX_MEMORY_IMAGES: usize = 100;
 const MAX_FRAMES: usize = 60;
+/// More animated images than this on screen: none of them animates (saves bandwidth, e.g. over SSH).
+const MAX_ANIMATED: usize = 4;
+const MIN_FRAME_MILLIS: u32 = 100;
 const MAX_ASPECT: u32 = 4;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_FONT: (u16, u16) = (10, 20);
@@ -169,6 +172,7 @@ pub struct ImageStore {
     slots: HashMap<Key, Slot>,
     drawn: HashSet<Key>,
     visible: HashSet<Key>,
+    animating: HashSet<Key>,
     clock: u64,
     tx: UnboundedSender<AppEvent>,
     client: Option<reqwest::Client>,
@@ -243,6 +247,7 @@ impl ImageStore {
             slots: HashMap::new(),
             drawn: HashSet::new(),
             visible: HashSet::new(),
+            animating: HashSet::new(),
             clock: 0,
             tx,
             client: None,
@@ -251,7 +256,8 @@ impl ImageStore {
 
     pub fn configure(&mut self, picker: Option<Picker>, config: &Config) {
         self.picker = picker;
-        self.animate = config.eicon_animate;
+        // GIFs resend their pixels with every frame: off by default over SSH, /gif on enables them
+        self.animate = config.eicon_animate && std::env::var_os("SSH_CONNECTION").is_none();
         self.eicon_rows = config.eicon_height.clamp(1, 20) as u16;
         self.max_age = Duration::from_secs_f64(config.eicon_max_age_hours.max(0.0) * 3600.0);
         if self.picker.is_some() {
@@ -386,6 +392,13 @@ impl ImageStore {
 
     pub fn end_frame(&mut self) {
         self.visible = std::mem::take(&mut self.drawn);
+        let candidates: HashSet<Key> = self
+            .visible
+            .iter()
+            .filter(|key| matches!(self.slots.get(*key), Some(Slot::Ready(loaded)) if loaded.frames.len() > 1 && !loaded.total.is_zero()))
+            .cloned()
+            .collect();
+        self.animating = if candidates.len() > MAX_ANIMATED { HashSet::new() } else { candidates };
         for (key, slot) in &mut self.slots {
             if let Slot::Ready(loaded) = slot {
                 if !self.visible.contains(key) {
@@ -395,12 +408,12 @@ impl ImageStore {
         }
     }
 
-    fn animated(&self, loaded: &Loaded) -> bool {
-        self.animate && self.attached && loaded.frames.len() > 1 && !loaded.total.is_zero()
+    fn animated(&self, key: &Key, loaded: &Loaded) -> bool {
+        self.animate && self.attached && loaded.frames.len() > 1 && !loaded.total.is_zero() && self.animating.contains(key)
     }
 
-    fn frame_index(&self, loaded: &Loaded) -> usize {
-        if !self.animated(loaded) {
+    fn frame_index(&self, key: &Key, loaded: &Loaded) -> usize {
+        if !self.animated(key, loaded) {
             return 0;
         }
         let total = loaded.total.as_millis().max(1);
@@ -421,7 +434,7 @@ impl ImageStore {
         let mut best: Option<Duration> = None;
         for key in &self.visible {
             let Some(Slot::Ready(loaded)) = self.slots.get(key) else { continue };
-            if !self.animated(loaded) {
+            if !self.animated(key, loaded) {
                 continue;
             }
             let total = loaded.total.as_millis().max(1);
@@ -443,7 +456,7 @@ impl ImageStore {
     pub fn render(&mut self, frame: &mut Frame, key: &Key, area: Rect) -> bool {
         let Some(picker) = &self.picker else { return false };
         let index = match self.slots.get(key) {
-            Some(Slot::Ready(loaded)) => self.frame_index(loaded),
+            Some(Slot::Ready(loaded)) => self.frame_index(key, loaded),
             _ => return false,
         };
         self.clock += 1;
@@ -556,7 +569,7 @@ pub fn decode(bytes: &[u8], max_width: u32, max_height: u32, fill: bool) -> Opti
             let frame = frame.ok()?;
             let (numerator, denominator) = frame.delay().numer_denom_ms();
             let millis = numerator.checked_div(denominator).unwrap_or(100);
-            let millis = if millis < 20 { 100 } else { millis.max(50) };
+            let millis = if millis < 20 { 100 } else { millis.max(MIN_FRAME_MILLIS) };
             frames.push((flatten_and_fit(frame.into_buffer(), max_width, max_height, fill), Duration::from_millis(u64::from(millis))));
         }
     } else {
@@ -659,5 +672,36 @@ mod tests {
         assert!(store.next_wake().is_some());
         store.animate = false;
         assert!(store.next_wake().is_none());
+    }
+
+    #[test]
+    fn too_many_animated_images_stay_still() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut store = ImageStore::new(tx);
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Sixel);
+        store.picker = Some(picker);
+        let keys: Vec<Key> = (0..5).map(|index| Key::new(Kind::Eicon, &format!("e{index}"))).collect();
+        for key in &keys {
+            store.slots.insert(key.clone(), Slot::Loading);
+            let frames = vec![
+                (RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100)),
+                (RgbaImage::from_pixel(20, 40, image::Rgba([0, 255, 0, 255])), Duration::from_millis(100)),
+            ];
+            store.on_loaded(key.clone(), Some(frames));
+        }
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 5)).unwrap();
+        for shown in [4usize, 5] {
+            store.begin_frame();
+            terminal
+                .draw(|frame| {
+                    for (index, key) in keys.iter().take(shown).enumerate() {
+                        store.render(frame, key, Rect::new(index as u16 * 3, 0, 2, 2));
+                    }
+                })
+                .unwrap();
+            store.end_frame();
+            assert_eq!(store.next_wake().is_some(), shown <= MAX_ANIMATED);
+        }
     }
 }
