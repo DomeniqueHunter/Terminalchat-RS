@@ -111,6 +111,10 @@ async fn run(config: Config) -> std::io::Result<()> {
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        if app.images.take_stale() {
+            terminal.clear()?;
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        }
         for sequence in app.osc_queue.drain(..) {
             let mut out = stdout();
             out.write_all(sequence.as_bytes())?;

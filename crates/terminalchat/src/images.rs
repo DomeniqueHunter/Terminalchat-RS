@@ -175,6 +175,9 @@ pub struct ImageStore {
     max_age: Duration,
     slots: HashMap<Key, Slot>,
     drawn: HashSet<Key>,
+    areas: Vec<Rect>,
+    last_areas: Vec<Rect>,
+    stale: bool,
     visible: HashSet<Key>,
     animating: HashSet<Key>,
     clock: u64,
@@ -260,6 +263,9 @@ impl ImageStore {
             max_age: Duration::from_secs(24 * 3600),
             slots: HashMap::new(),
             drawn: HashSet::new(),
+            areas: Vec::new(),
+            last_areas: Vec::new(),
+            stale: false,
             visible: HashSet::new(),
             animating: HashSet::new(),
             clock: 0,
@@ -391,10 +397,21 @@ impl ImageStore {
 
     pub fn begin_frame(&mut self) {
         self.drawn.clear();
+        self.areas.clear();
+    }
+
+    /// True when an image left a place it was drawn at: the terminal may keep its pixels, so the
+    /// caller repaints the whole screen once.
+    pub fn take_stale(&mut self) -> bool {
+        std::mem::take(&mut self.stale)
     }
 
     pub fn end_frame(&mut self) {
         self.visible = std::mem::take(&mut self.drawn);
+        if self.last_areas.iter().any(|area| !self.areas.contains(area)) {
+            self.stale = true;
+        }
+        self.last_areas = std::mem::take(&mut self.areas);
         let candidates: HashSet<Key> = self
             .visible
             .iter()
@@ -492,6 +509,7 @@ impl ImageStore {
         }
         loaded.last = Some((area, index));
         self.drawn.insert(key.clone());
+        self.areas.push(area);
         true
     }
 }
