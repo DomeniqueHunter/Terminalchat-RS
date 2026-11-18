@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "fchat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "terminalchat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
