@@ -190,6 +190,13 @@ fn window_font() -> Option<(u16, u16)> {
     Some(((size.width / size.columns).max(1), (size.height / size.rows).max(1)))
 }
 
+/// Parses "8x18" (cell width x height in pixels).
+fn parse_cell_size(text: &str) -> Option<(u16, u16)> {
+    let (width, height) = text.trim().to_lowercase().split_once('x').map(|(w, h)| (w.trim().to_string(), h.trim().to_string()))?;
+    let (width, height) = (width.parse::<u16>().ok()?, height.parse::<u16>().ok()?);
+    (width > 0 && height > 0).then_some((width, height))
+}
+
 fn protocol_by_name(name: &str) -> Option<ProtocolType> {
     match name {
         "sixel" => Some(ProtocolType::Sixel),
@@ -221,6 +228,9 @@ pub fn detect_picker(config: &Config) -> Option<Picker> {
     };
     if let Some(protocol) = forced.as_deref().and_then(protocol_by_name) {
         picker.set_protocol_type(protocol);
+    }
+    if let Some((width, height)) = config.cell_size.as_deref().and_then(parse_cell_size) {
+        picker = rebuilt(&picker, FontSize::new(width, height));
     }
     let konsole = std::env::var_os("KONSOLE_VERSION").is_some_and(|value| !value.is_empty());
     if konsole && forced.is_none() && picker.protocol_type() != ProtocolType::Halfblocks {
@@ -287,18 +297,6 @@ impl ImageStore {
             Some(ProtocolType::Iterm2) => "iterm2",
             _ => "none",
         }
-    }
-
-    /// Measures the cell size again. Returns true when it changed (all images are loaded again).
-    pub fn remeasure(&mut self) -> bool {
-        let Some((width, height)) = window_font() else { return false };
-        let Some(picker) = &self.picker else { return false };
-        if (picker.font_size().width, picker.font_size().height) == (width, height) {
-            return false;
-        }
-        self.picker = Some(rebuilt(picker, FontSize::new(width, height)));
-        self.slots.clear();
-        true
     }
 
     fn rows_of(&self, kind: Kind) -> u16 {
@@ -769,5 +767,13 @@ mod tests {
         let second = draw(&mut store, &mut terminal);
         assert_ne!(first, second);
         assert!(second.starts_with("\x1bP"), "no erase in front of the next frame");
+    }
+
+    #[test]
+    fn cell_size_is_parsed() {
+        assert_eq!(parse_cell_size("8x18"), Some((8, 18)));
+        assert_eq!(parse_cell_size(" 9 X 20 "), Some((9, 20)));
+        assert_eq!(parse_cell_size("0x18"), None);
+        assert_eq!(parse_cell_size("abc"), None);
     }
 }

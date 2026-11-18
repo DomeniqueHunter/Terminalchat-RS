@@ -44,7 +44,6 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("pins", "", "show pinned chats"),
     ("ads", "[on|off]", "show or hide ads in the current channel"),
     ("gif", "[on|off]", "animate GIF eicons on or off"),
-    ("resizeimages", "", "measure the terminal cell size again and reload images"),
     ("char", "[name]", "switch character"),
     ("reconnect", "", "reconnect to the chat server now"),
     ("logout", "", "log out and forget password"),
@@ -257,7 +256,6 @@ impl App {
             }
             "ads" => self.cmd_ads(args),
             "gif" => self.cmd_gif(args),
-            "resizeimages" => self.cmd_resizeimages(),
             "char" => self.cmd_char(args),
             "reconnect" => {
                 if self.online {
@@ -489,17 +487,6 @@ impl App {
         let state = if self.images.animate { "on" } else { "off" };
         let info = self.image_info();
         self.notify(format!("GIF animation: {state} ({info})"), Severity::Information);
-    }
-
-    fn cmd_resizeimages(&mut self) {
-        if !self.images.enabled() {
-            self.notify("Images are not active", Severity::Warning);
-            return;
-        }
-        let changed = self.images.remeasure();
-        let info = self.image_info();
-        let text = if changed { format!("Cell size changed, images reload ({info})") } else { format!("Cell size unchanged ({info})") };
-        self.notify(text, Severity::Information);
     }
 
     fn cmd_char(&mut self, args: &str) {

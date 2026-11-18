@@ -19,9 +19,6 @@ pub fn handle(app: &mut App, event: Event) {
         Event::Key(key) if key.kind != KeyEventKind::Release => on_key(app, key),
         Event::Mouse(mouse) => on_mouse(app, mouse),
         Event::Paste(text) => paste(app, &text),
-        Event::Resize(..) => {
-            app.images.remeasure();
-        }
         _ => {}
     }
 }
