@@ -41,7 +41,7 @@ pub fn plain_text(segs: &[Seg]) -> String {
     segs.iter().map(|seg| seg.text.as_str()).collect()
 }
 
-fn percent_encode(text: &str) -> String {
+pub fn percent_encode(text: &str) -> String {
     let mut result = String::new();
     for byte in text.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {

@@ -3,6 +3,7 @@ mod bbcode;
 mod commands;
 mod config;
 mod events;
+mod images;
 mod input;
 mod pager;
 mod paths;
@@ -87,6 +88,8 @@ fn handle(app: &mut App, event: AppEvent) {
         AppEvent::Ticket(purpose, result) => app.on_ticket(purpose, result),
         AppEvent::Connected(generation, result) => app.on_connected(generation, result),
         AppEvent::Profile(name, result) => app.on_profile(&name, result),
+        AppEvent::Image(key, frames) => app.images.on_loaded(key, frames),
+        AppEvent::Attached(attached) => app.images.attached = attached,
     }
 }
 
@@ -95,6 +98,8 @@ async fn run(config: Config) -> std::io::Result<()> {
     let mut app = App::new(config, tx.clone());
     let mut terminal = ratatui::init();
     execute!(stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    let picker = images::detect_picker(&app.config);
+    app.images.configure(picker, &app.config);
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
@@ -111,7 +116,14 @@ async fn run(config: Config) -> std::io::Result<()> {
             out.write_all(sequence.as_bytes())?;
             out.flush()?;
         }
-        let Some(event) = rx.recv().await else { break };
+        let event = match app.images.next_wake() {
+            Some(due) => tokio::select! {
+                event = rx.recv() => event,
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(due)) => continue,
+            },
+            None => rx.recv().await,
+        };
+        let Some(event) = event else { break };
         handle(&mut app, event);
         while let Ok(event) = rx.try_recv() {
             handle(&mut app, event);

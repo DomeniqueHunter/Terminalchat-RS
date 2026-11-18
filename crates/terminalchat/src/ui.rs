@@ -9,6 +9,7 @@ use ratatui::Frame;
 
 use crate::app::{App, Focus, InputMode, Severity, SidebarTab, TITLE};
 use crate::bbcode::{split_lines, to_segs, Seg};
+use crate::images::{self, full_image_url, Key, Kind, Status};
 use crate::commands::{command_usage, matching_commands, resolve_alias, COMMAND_INFO, FOOTER_KEYS};
 use crate::pager::RowKind;
 use crate::rows::{char_width, text_width, wrap};
@@ -44,6 +45,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.regions.modes.clear();
     app.regions.sidebar_tabs.clear();
     app.regions.footer.clear();
+    app.images.begin_frame();
 
     let (input_rows, cursor, input_lines) = input_layout(app, area.width.saturating_sub(2) as usize);
     let input_height = input_rows as u16 + 2;
@@ -88,6 +90,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let (Some(position), Focus::Input) = (input_cursor, app.focus) {
         frame.set_cursor_position(position);
     }
+    app.images.end_frame();
 }
 
 // ------------------------------------------------------------------ title
@@ -168,6 +171,7 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     app.regions.chat_text = vec![String::new(); area.height as usize];
     let width = area.width.saturating_sub(1) as usize;
     let height = area.height as usize;
+    app.pager.image_rows = if app.images.enabled() { app.images.eicon_rows() as usize } else { 0 };
     let Some(rows) = app.pager_op(|pager, src| pager.rows(src, width, height)) else {
         let text = "No chat open. Use /join <channel> or ctrl+o for the channel list.";
         frame.render_widget(Paragraph::new(text).style(dim()), area);
@@ -178,8 +182,13 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     let start = end.saturating_sub(height);
     let offset = height.saturating_sub(end - start) as u16;
     let mut lines = Vec::new();
+    let image_rows = app.pager.image_rows;
+    let mut strips: Vec<(u16, Vec<Key>, bool)> = Vec::new();
     for (index, row) in rows[start..end].iter().enumerate() {
         let y = area.y + offset + index as u16;
+        if row.kind == RowKind::Image {
+            strips.push((y, row.images.clone(), index + image_rows <= end - start));
+        }
         let mut x = 0usize;
         for seg in &row.segs {
             let seg_width = text_width(&seg.text);
@@ -194,11 +203,68 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut padded: Vec<Line> = vec![Line::default(); offset as usize];
     padded.extend(lines);
     frame.render_widget(Paragraph::new(padded), rect(area.x, area.y, area.width.saturating_sub(1), area.height));
+    let draw_images = app.screens.is_empty();
+    for (y, keys, complete) in strips {
+        let items: Vec<(Key, Option<String>)> = keys
+            .into_iter()
+            .map(|key| {
+                let link = if key.kind == Kind::Avatar { crate::bbcode::profile_url(&key.name) } else { crate::bbcode::eicon_url(&key.name) };
+                (key, Some(link))
+            })
+            .collect();
+        let target = StripTarget { x: area.x, y, width: area.width.saturating_sub(1), rows: image_rows as u16, draw: complete && draw_images, chat: true };
+        draw_strip(frame, app, &items, &target);
+    }
     if scroll > 0 {
         let text = " \u{2193} scrolled (page down) ";
         let w = text_width(text) as u16;
         let marker = rect(area.x + area.width.saturating_sub(w + 1), area.y + area.height.saturating_sub(1), w.min(area.width), 1);
         frame.render_widget(Paragraph::new(text).style(reversed()), marker);
+    }
+}
+
+struct StripTarget {
+    x: u16,
+    y: u16,
+    width: u16,
+    rows: u16,
+    draw: bool,
+    chat: bool,
+}
+
+/// Draws images side by side in a strip of `rows` rows; not yet loaded or missing images show their name.
+fn draw_strip(frame: &mut Frame, app: &mut App, items: &[(Key, Option<String>)], target: &StripTarget) {
+    let mut x = target.x;
+    let limit = target.x + target.width;
+    for (key, link) in items {
+        app.images.request(key);
+        let (columns, rows) = match (app.images.status(key), app.images.size_cells(key)) {
+            (Status::Ready, Some(size)) => size,
+            _ => (text_width(&key.label()).min(target.width as usize) as u16, 1),
+        };
+        if columns == 0 || x + columns > limit {
+            break;
+        }
+        let area = rect(x, target.y, columns, rows.min(target.rows));
+        if target.draw {
+            let drawn = app.images.status(key) == Status::Ready && app.images.render(frame, key, area);
+            if !drawn {
+                let style = match (app.images.status(key), key.kind) {
+                    (Status::Loading, _) => dim(),
+                    (_, Kind::Eicon) => crate::style::eicon_style(),
+                    _ => crate::style::icon_style(),
+                };
+                frame.render_widget(Paragraph::new(Span::styled(key.label(), style)), rect(x, target.y, columns, 1));
+            }
+        }
+        if let Some(link) = link {
+            if target.chat {
+                app.regions.links.push((area, link.clone(), None));
+            } else {
+                app.regions.modal_links.push((area, link.clone()));
+            }
+        }
+        x += columns + 1;
     }
 }
 
@@ -603,13 +669,14 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             let outer = centered(area, (area.width * 8 / 10).max(40), (area.height * 9 / 10).max(10));
             let inner = modal(frame, outer, &format!("Profile: {}", profile.character));
             let lines = match &profile.result {
-                None => vec![vec![Seg::new("Loading...", dim())]],
-                Some(Err(error)) => vec![vec![Seg::new(error.clone(), fg(crate::style::rgb(0xd75f5f)))]],
+                None => vec![PItem::Text(vec![Seg::new("Loading...", dim())])],
+                Some(Err(error)) => vec![PItem::Text(vec![Seg::new(error.clone(), fg(crate::style::rgb(0xd75f5f)))])],
                 Some(Ok(data)) => profile_lines(app, data),
             };
             let body = rect(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
-            draw_lines(frame, app, body, &lines, &mut profile.scroll);
-            footer(frame, outer, "up/down/page: scroll, esc: close");
+            let avatar = app.images.enabled().then(|| Key::new(Kind::Avatar, &profile.character));
+            draw_profile(frame, app, body, &lines, avatar, &mut profile.scroll);
+            footer(frame, outer, "up/down/page: scroll, esc: close, click an image: copy its link");
         }
         Screen::Info(info) => {
             let width = if info.wide { (area.width * 8 / 10).max(40) } else { 70 };
@@ -669,7 +736,22 @@ fn format_time(timestamp: i64) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-pub fn profile_lines(app: &App, profile: &fchat::Profile) -> Vec<Vec<Seg>> {
+pub enum PItem {
+    Text(Vec<Seg>),
+    /// Thumbnails: (image, link to the full image, description).
+    Thumbs(Vec<(Key, String, String)>),
+}
+
+type StripItems = Vec<(Key, Option<String>)>;
+type ProfileStrip = (u16, StripItems, u16, bool);
+
+enum PRow {
+    Text(Vec<Seg>),
+    Strip(Vec<(Key, Option<String>)>, u16),
+    Cont,
+}
+
+pub fn profile_lines(app: &App, profile: &fchat::Profile) -> Vec<PItem> {
     let mut lines: Vec<Vec<Seg>> = Vec::new();
     let name_style = |name: &str| app.name_style(name);
     lines.push(vec![Seg::new(profile.name.clone(), app.name_style(&profile.name).patch(bold()))]);
@@ -702,16 +784,106 @@ pub fn profile_lines(app: &App, profile: &fchat::Profile) -> Vec<Vec<Seg>> {
         lines.push(vec![Seg::new(format!("Kinks \u{2014} {label} ({})", names.len()), bold())]);
         lines.push(vec![Seg::new(names.join(", "), Style::default())]);
     }
+    let mut items: Vec<PItem> = lines.into_iter().map(PItem::Text).collect();
     if !profile.images.is_empty() {
-        lines.push(Vec::new());
-        lines.push(vec![Seg::new(format!("Images ({})", profile.images.len()), bold())]);
-        for (_, description) in &profile.images {
-            if !description.is_empty() {
-                lines.push(vec![Seg::new(format!("  {description}"), dim())]);
+        items.push(PItem::Text(Vec::new()));
+        items.push(PItem::Text(vec![Seg::new(format!("Images ({})", profile.images.len()), bold())]));
+        if app.images.enabled() {
+            let thumbs = profile.images.iter().map(|(file, description)| (Key::new(Kind::Thumb, file), full_image_url(file), description.clone())).collect();
+            items.push(PItem::Thumbs(thumbs));
+        } else {
+            for (_, description) in &profile.images {
+                if !description.is_empty() {
+                    items.push(PItem::Text(vec![Seg::new(format!("  {description}"), dim())]));
+                }
             }
         }
     }
-    lines
+    items
+}
+
+fn push_strip(rows: &mut Vec<PRow>, items: Vec<(Key, Option<String>)>, height: u16) {
+    rows.push(PRow::Strip(items, height));
+    for _ in 1..height {
+        rows.push(PRow::Cont);
+    }
+}
+
+fn expand_profile(app: &mut App, items: &[PItem], avatar: Option<Key>, width: usize) -> Vec<PRow> {
+    let mut rows: Vec<PRow> = Vec::new();
+    if let Some(key) = avatar {
+        push_strip(&mut rows, vec![(key, None)], images::AVATAR_ROWS);
+        rows.push(PRow::Text(Vec::new()));
+    }
+    let (font_width, font_height) = app.images.font();
+    let estimate = (u32::from(images::THUMB_ROWS) * u32::from(font_height)).div_ceil(u32::from(font_width.max(1))) as usize;
+    for item in items {
+        match item {
+            PItem::Text(line) => rows.extend(wrap(line, width).into_iter().map(PRow::Text)),
+            PItem::Thumbs(thumbs) => {
+                let mut group: Vec<(Key, Option<String>)> = Vec::new();
+                let mut notes: Vec<String> = Vec::new();
+                let mut used = 0usize;
+                let flush = |rows: &mut Vec<PRow>, group: &mut Vec<(Key, Option<String>)>, notes: &mut Vec<String>, used: &mut usize| {
+                    if group.is_empty() {
+                        return;
+                    }
+                    push_strip(rows, std::mem::take(group), images::THUMB_ROWS);
+                    rows.extend(notes.drain(..).map(|note| PRow::Text(vec![Seg::new(note, dim())])));
+                    *used = 0;
+                };
+                for (number, (key, link, description)) in thumbs.iter().enumerate() {
+                    app.images.request(key);
+                    let columns = app.images.size_cells(key).map_or(estimate, |size| size.0 as usize);
+                    if !group.is_empty() && (used + columns > width || group.len() >= images::THUMB_COLUMNS) {
+                        flush(&mut rows, &mut group, &mut notes, &mut used);
+                    }
+                    group.push((key.clone(), Some(link.clone())));
+                    if !description.is_empty() {
+                        notes.push(format!("  {}. {description}", number + 1));
+                    }
+                    used += columns + 1;
+                }
+                flush(&mut rows, &mut group, &mut notes, &mut used);
+            }
+        }
+    }
+    rows
+}
+
+fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, items: &[PItem], avatar: Option<Key>, scroll: &mut usize) {
+    let rows = expand_profile(app, items, avatar, area.width as usize);
+    let height = area.height as usize;
+    *scroll = (*scroll).min(rows.len().saturating_sub(height));
+    let mut shown = Vec::new();
+    let mut strips: Vec<ProfileStrip> = Vec::new();
+    for (index, row) in rows.iter().enumerate().skip(*scroll).take(height) {
+        let y = area.y + (index - *scroll) as u16;
+        match row {
+            PRow::Text(segs) => {
+                let mut x = 0usize;
+                for seg in segs {
+                    let w = text_width(&seg.text);
+                    if let Some(link) = &seg.link {
+                        app.regions.modal_links.push((rect(area.x + x as u16, y, w as u16, 1), link.clone()));
+                    }
+                    x += w;
+                }
+                shown.push(spans(segs));
+            }
+            PRow::Strip(items, strip_rows) => {
+                let complete = index + *strip_rows as usize <= *scroll + height;
+                strips.push((y, items.clone(), *strip_rows, complete));
+                shown.push(Line::default());
+            }
+            PRow::Cont => shown.push(Line::default()),
+        }
+    }
+    frame.render_widget(Paragraph::new(shown), area);
+    for (y, items, strip_rows, complete) in strips {
+        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false };
+        draw_strip(frame, app, &items, &target);
+    }
 }
 
 #[cfg(test)]

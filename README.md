@@ -3,7 +3,7 @@
 Rust rewrite of [terminalchat](../Terminalchat), a terminal client for [F-Chat](https://www.f-list.net/chat3/).
 It uses the same `config.json` and the same data directories as the Python version, so both can be used on the same data.
 
-Status: complete client (chat, channels, private chats, ads, moderation, profile, pickers, reconnect). Not ported: inline eicon/avatar images (links are shown as text).
+Status: complete client (chat, channels, private chats, ads, moderation, profile, pickers, reconnect). Images (eicons, avatars, profile thumbnails, GIF animation) are drawn inline when the terminal supports Sixel, Kitty or iTerm2 graphics; otherwise links are shown as text.
 
 ## Layout
 
@@ -53,3 +53,11 @@ Unknown keys in `config.json` are kept when the file is saved.
 ```
 
 Without a complete `config.json` a login screen appears. `/help` lists commands, `/shortcuts` the key bindings. Hold Shift to select text with the mouse.
+
+## Images
+
+- Needs `"eicons": "inline"` in `config.json` and a terminal with graphics (Sixel, Kitty or iTerm2). The terminal is asked at start; inside tmux the launcher enables `allow-passthrough`.
+- `TERMINALCHAT_IMAGES=off|sixel|kitty|iterm2` overrides the detection.
+- Eicons and icons of a message appear in a strip below the message (`eicon_height` rows). Click an image to copy its link. The profile shows the avatar on top and thumbnails in the Images section; click a thumbnail to copy the link of the full image.
+- `/gif [on|off]` switches GIF animation (config `eicon_animate`), `/resizeimages` measures the cell size again. Animation runs only for visible images and pauses while the tmux client is detached.
+- Cache: `~/.cache/terminalchat/{eicons,avatars,thumbs}` (same as the Python version), refreshed after `eicon_max_age_hours`.

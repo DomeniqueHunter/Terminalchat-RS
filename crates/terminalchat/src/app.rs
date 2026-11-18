@@ -12,6 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::bbcode::{Seg, CHANNEL_LINK, SPOILER_LINK, USER_LINK};
 use crate::config::Config;
+use crate::images::{Frames, ImageStore, Key};
 use crate::input::InputBox;
 use crate::pager::{EntryKey, Pager, Source};
 use crate::paths;
@@ -45,6 +46,9 @@ pub enum AppEvent {
     Ticket(TicketPurpose, fchat::Result<LoginResult>),
     Connected(u64, fchat::Result<Connection>),
     Profile(String, Result<fchat::Profile, String>),
+    Image(Key, Option<Frames>),
+    /// Whether a tmux client is attached (animations pause while detached).
+    Attached(bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -164,6 +168,7 @@ pub struct App {
     pub ad_channel: Option<String>,
     pub chat_draft: String,
     pub pager: Pager,
+    pub images: ImageStore,
     pub screens: Vec<Screen>,
     pub toasts: Vec<Toast>,
     pub show_sidebar: bool,
@@ -178,6 +183,7 @@ pub struct App {
 
     last_list_refresh: Option<Instant>,
     last_gender_save: Instant,
+    ticks: u64,
     pub minimize_requested: bool,
 }
 
@@ -195,6 +201,7 @@ impl App {
         let show_sidebar = config.show_sidebar;
         let show_ads = config.show_ads;
         let mut app = App {
+            images: ImageStore::new(tx.clone()),
             tx,
             should_quit: false,
             osc_queue: Vec::new(),
@@ -246,6 +253,7 @@ impl App {
             sidebar_cursor: 0,
             last_list_refresh: None,
             last_gender_save: Instant::now(),
+            ticks: 0,
             minimize_requested: false,
             config,
         };
@@ -603,6 +611,17 @@ impl App {
     pub fn on_tick(&mut self) {
         let now = Instant::now();
         self.toasts.retain(|toast| toast.expires > now);
+        self.ticks += 1;
+        if self.ticks.is_multiple_of(5) && self.images.enabled() && std::env::var_os("TMUX").is_some() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let output = std::process::Command::new("tmux").args(["display-message", "-p", "#{session_attached}"]).output();
+                if let Ok(output) = output {
+                    let attached = String::from_utf8_lossy(&output.stdout).trim().parse::<u32>().is_ok_and(|count| count > 0);
+                    let _ = tx.send(AppEvent::Attached(attached));
+                }
+            });
+        }
 
         if let Some(state) = &self.reconnect {
             if !self.online && !state.in_flight {

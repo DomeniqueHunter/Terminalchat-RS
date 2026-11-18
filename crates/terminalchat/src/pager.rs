@@ -8,6 +8,7 @@ use chrono::Local;
 use ratatui::style::Style;
 
 use crate::bbcode::{NameStyle, Seg};
+use crate::images::{self, Key};
 use crate::rows::wrap;
 use crate::store::{is_ad_line, render_line, Chat, ChatStore, CHANNEL};
 use crate::stores::AdSettings;
@@ -55,6 +56,9 @@ pub enum RowKind {
     Blank,
     Rule,
     LogStart,
+    /// First row of an image strip; `Row::images` lists the images.
+    Image,
+    ImageCont,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +66,7 @@ pub struct Row {
     pub segs: Vec<Seg>,
     pub key: Option<EntryKey>,
     pub kind: RowKind,
+    pub images: Vec<Key>,
 }
 
 #[derive(Default)]
@@ -76,6 +81,8 @@ pub struct Pager {
     pub width: usize,
     pub height: usize,
     pub total_rows: usize,
+    /// Rows reserved below a message for its images, 0 = images off.
+    pub image_rows: usize,
 }
 
 pub fn today() -> String {
@@ -210,7 +217,7 @@ impl Pager {
             self.open(src, &chat_id, Some(&day), false);
             return;
         }
-        let rows = wrap(&render_line(line, src.name_style, false), self.width.max(1)).len();
+        let rows = self.entry_rows(src, line, None, false, self.width.max(1)).len();
         let last = self.blocks.last_mut().unwrap();
         last.lines.push(line.to_string());
         last.end += 1;
@@ -274,18 +281,32 @@ impl Pager {
         let mut rows = Vec::new();
         let width = self.width.max(1);
         if block.start == 0 {
-            rows.push(Row { segs: Vec::new(), key: None, kind: RowKind::Blank });
+            rows.push(Row { segs: Vec::new(), key: None, kind: RowKind::Blank, images: Vec::new() });
             let bar = "\u{2500}".repeat(RULE_WIDTH);
             let text = format!("{bar} {} {bar}", block.day);
             let padding = width.saturating_sub(crate::rows::text_width(&text)) / 2;
             let segs = vec![Seg::new(format!("{}{text}", " ".repeat(padding)), dim())];
-            rows.push(Row { segs, key: None, kind: RowKind::Rule });
+            rows.push(Row { segs, key: None, kind: RowKind::Rule, images: Vec::new() });
         }
         for (offset, line) in block.lines.iter().enumerate() {
             let key = (block.day.clone(), block.start + offset);
             let reveal = self.reveal.contains(&key);
-            for segs in wrap(&render_line(line, src.name_style, reveal), width) {
-                rows.push(Row { segs, key: Some(key.clone()), kind: RowKind::Text });
+            rows.extend(self.entry_rows(src, line, Some(key), reveal, width));
+        }
+        rows
+    }
+
+    /// Screen rows of one log line, including the strip reserved for its images.
+    fn entry_rows(&self, src: &Source, line: &str, key: Option<EntryKey>, reveal: bool, width: usize) -> Vec<Row> {
+        let (text, images) = if self.image_rows > 0 { images::extract(line, images::MAX_PER_MESSAGE) } else { (line.to_string(), Vec::new()) };
+        let mut rows: Vec<Row> = wrap(&render_line(&text, src.name_style, reveal), width)
+            .into_iter()
+            .map(|segs| Row { segs, key: key.clone(), kind: RowKind::Text, images: Vec::new() })
+            .collect();
+        if !images.is_empty() {
+            rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::Image, images });
+            for _ in 1..self.image_rows {
+                rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::ImageCont, images: Vec::new() });
             }
         }
         rows
@@ -304,7 +325,7 @@ impl Pager {
             let text = "Beginning of the log";
             let padding = width.saturating_sub(text.len()) / 2;
             let style = dim().patch(Style::default().add_modifier(ratatui::style::Modifier::ITALIC));
-            rows.push(Row { segs: vec![Seg::new(format!("{}{text}", " ".repeat(padding)), style)], key: None, kind: RowKind::LogStart });
+            rows.push(Row { segs: vec![Seg::new(format!("{}{text}", " ".repeat(padding)), style)], key: None, kind: RowKind::LogStart, images: Vec::new() });
         }
         for block in &self.blocks {
             rows.extend(self.block_rows(block, src));
@@ -392,5 +413,18 @@ mod tests {
         let line = store.append(&chat, "Bob", "neu");
         pager.append(&src, &line);
         assert_eq!(pager.rows(&src, 80, 20).iter().filter(|row| row.kind == RowKind::Text).count(), 2);
+    }
+
+    #[test]
+    fn images_reserve_rows_below_the_text() {
+        let (store, ads, chat) = setup("img", 0);
+        let mut pager = Pager { image_rows: 3, ..Default::default() };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names };
+        let rows = pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon]", None, false, 40);
+        let kinds: Vec<&RowKind> = rows.iter().map(|row| &row.kind).collect();
+        assert_eq!(kinds, vec![&RowKind::Text, &RowKind::Image, &RowKind::ImageCont, &RowKind::ImageCont]);
+        assert_eq!(rows[1].images.len(), 1);
+        pager.image_rows = 0;
+        assert_eq!(pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon]", None, false, 40).len(), 1);
     }
 }

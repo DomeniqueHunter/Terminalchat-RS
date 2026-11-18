@@ -43,6 +43,8 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("unpin", "", "unpin the current chat"),
     ("pins", "", "show pinned chats"),
     ("ads", "[on|off]", "show or hide ads in the current channel"),
+    ("gif", "[on|off]", "animate GIF eicons on or off"),
+    ("resizeimages", "", "measure the terminal cell size again and reload images"),
     ("char", "[name]", "switch character"),
     ("reconnect", "", "reconnect to the chat server now"),
     ("logout", "", "log out and forget password"),
@@ -253,6 +255,8 @@ impl App {
                 }
             }
             "ads" => self.cmd_ads(args),
+            "gif" => self.cmd_gif(args),
+            "resizeimages" => self.cmd_resizeimages(),
             "char" => self.cmd_char(args),
             "reconnect" => {
                 if self.online {
@@ -459,6 +463,42 @@ impl App {
         }
         let state = if self.ads.visible(&chat.key) { "shown" } else { "hidden" };
         self.notify(format!("Ads in {}: {state}", chat.title), Severity::Information);
+    }
+
+    fn image_info(&self) -> String {
+        let (width, height) = self.images.font();
+        format!("images: {}, cell {width}x{height} px", self.images.protocol_name())
+    }
+
+    fn cmd_gif(&mut self, args: &str) {
+        let value = args.trim().to_lowercase();
+        if !["", "on", "off"].contains(&value.as_str()) {
+            self.warn("Usage: /gif [on|off]");
+            return;
+        }
+        if !self.images.enabled() {
+            self.notify("Images are not active (config \"eicons\" must be \"inline\" and the terminal needs Sixel, Kitty or iTerm2 graphics)", Severity::Warning);
+            return;
+        }
+        if !value.is_empty() {
+            self.images.animate = value == "on";
+            self.config.eicon_animate = self.images.animate;
+            let _ = self.config.save();
+        }
+        let state = if self.images.animate { "on" } else { "off" };
+        let info = self.image_info();
+        self.notify(format!("GIF animation: {state} ({info})"), Severity::Information);
+    }
+
+    fn cmd_resizeimages(&mut self) {
+        if !self.images.enabled() {
+            self.notify("Images are not active", Severity::Warning);
+            return;
+        }
+        let changed = self.images.remeasure();
+        let info = self.image_info();
+        let text = if changed { format!("Cell size changed, images reload ({info})") } else { format!("Cell size unchanged ({info})") };
+        self.notify(text, Severity::Information);
     }
 
     fn cmd_char(&mut self, args: &str) {
