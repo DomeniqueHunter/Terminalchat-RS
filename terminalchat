@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Launcher: runs the client inside tmux so that /minimize (detach) keeps it running.
+set -euo pipefail
+
+SESSION="terminalchat"
+SOCKET="terminalchat"
+BASE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ARCH="$(uname -m)"
+
+BIN=""
+for candidate in \
+    "${BASE_DIR}/build/terminalchat-${ARCH}" \
+    "${BASE_DIR}/terminalchat-${ARCH}" \
+    "${BASE_DIR}/target/release/terminalchat"; do
+    if [[ -x "${candidate}" ]]; then
+        BIN="${candidate}"
+        break
+    fi
+done
+if [[ -z "${BIN}" ]]; then
+    echo "No terminalchat binary found. Run './build.sh' first." >&2
+    exit 1
+fi
+
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux not found - starting without background support (/minimize unavailable)" >&2
+    exec "${BIN}"
+fi
+
+tmux_cmd() {
+    env -u TMUX tmux -L "${SOCKET}" -f "${BASE_DIR}/tmux.conf" "$@"
+}
+
+if ! tmux_cmd has-session -t "${SESSION}" 2>/dev/null; then
+    env_args=()
+    for name in NO_COLOR TERMINALCHAT_CONFIG TERMINALCHAT_DATA; do
+        if [[ -n "${!name:-}" ]]; then
+            env_args+=(-e "${name}=${!name}")
+        fi
+    done
+    tmux_cmd new-session -d -s "${SESSION}" \
+        -x "$(tput cols 2>/dev/null || echo 120)" -y "$(tput lines 2>/dev/null || echo 40)" \
+        "${env_args[@]}" "${BIN}"
+fi
+
+exec env -u TMUX tmux -L "${SOCKET}" -f "${BASE_DIR}/tmux.conf" attach-session -d -t "${SESSION}"
