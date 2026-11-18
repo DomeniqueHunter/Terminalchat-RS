@@ -8,6 +8,16 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
+# rustup installs cargo into ~/.cargo/bin, which is not in PATH of every shell
+if ! command -v cargo >/dev/null 2>&1 && [[ -f "${HOME}/.cargo/env" ]]; then
+    # shellcheck disable=SC1091
+    . "${HOME}/.cargo/env"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo not found. Run './setup.sh' to install Rust." >&2
+    exit 1
+fi
+
 ARM_TARGET="aarch64-unknown-linux-gnu"
 ARM_LINKER="aarch64-linux-gnu-gcc"
 BIN="terminalchat"
