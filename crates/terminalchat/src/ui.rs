@@ -183,11 +183,11 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     let offset = height.saturating_sub(end - start) as u16;
     let mut lines = Vec::new();
     let image_rows = app.pager.image_rows;
-    let mut strips: Vec<(u16, Vec<Key>, bool)> = Vec::new();
+    let mut strips: Vec<ChatStrip> = Vec::new();
     for (index, row) in rows[start..end].iter().enumerate() {
         let y = area.y + offset + index as u16;
         if row.kind == RowKind::Image {
-            strips.push((y, row.images.clone(), index + image_rows <= end - start));
+            strips.push((y, row.images.clone(), index + image_rows <= end - start, row.slots.clone()));
         }
         let mut x = 0usize;
         for seg in &row.segs {
@@ -204,7 +204,7 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     padded.extend(lines);
     frame.render_widget(Paragraph::new(padded), rect(area.x, area.y, area.width.saturating_sub(1), area.height));
     let draw_images = app.screens.is_empty();
-    for (y, keys, complete) in strips {
+    for (y, keys, complete, slots) in strips {
         let items: Vec<(Key, Option<String>)> = keys
             .into_iter()
             .map(|key| {
@@ -212,7 +212,7 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
                 (key, Some(link))
             })
             .collect();
-        let target = StripTarget { x: area.x, y, width: area.width.saturating_sub(1), rows: image_rows as u16, draw: complete && draw_images, chat: true };
+        let target = StripTarget { x: area.x, y, width: area.width.saturating_sub(1), rows: image_rows as u16, draw: complete && draw_images, chat: true, slots };
         draw_strip(frame, app, &items, &target);
     }
     if scroll > 0 {
@@ -223,6 +223,8 @@ fn draw_chat(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+type ChatStrip = (u16, Vec<Key>, bool, Vec<(u16, u16)>);
+
 struct StripTarget {
     x: u16,
     y: u16,
@@ -230,19 +232,25 @@ struct StripTarget {
     rows: u16,
     draw: bool,
     chat: bool,
+    /// Fixed (column, width) of each image inside a text line; empty = side by side.
+    slots: Vec<(u16, u16)>,
 }
 
 /// Draws images side by side in a strip of `rows` rows; not yet loaded or missing images show their name.
 fn draw_strip(frame: &mut Frame, app: &mut App, items: &[(Key, Option<String>)], target: &StripTarget) {
     let mut x = target.x;
     let limit = target.x + target.width;
-    for (key, link) in items {
+    for (index, (key, link)) in items.iter().enumerate() {
         app.images.request(key);
+        let slot = target.slots.get(index).copied();
+        if let Some((column, _)) = slot {
+            x = target.x + column;
+        }
         let (columns, rows) = match (app.images.status(key), app.images.size_cells(key)) {
             (Status::Ready, Some(size)) => size,
-            _ => (text_width(&key.label()).min(target.width as usize) as u16, 1),
+            _ => (slot.map_or_else(|| text_width(&key.label()).min(target.width as usize) as u16, |(_, width)| width), 1),
         };
-        if columns == 0 || x + columns > limit {
+        if columns == 0 || (slot.is_none() && x + columns > limit) || x + columns > target.x + target.width {
             break;
         }
         let area = rect(x, target.y, columns, rows.min(target.rows));
@@ -917,7 +925,7 @@ fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, items: &[PItem], a
     }
     frame.render_widget(Paragraph::new(shown), area);
     for (y, items, strip_rows, complete) in strips {
-        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false };
+        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false, slots: Vec::new() };
         draw_strip(frame, app, &items, &target);
     }
 }

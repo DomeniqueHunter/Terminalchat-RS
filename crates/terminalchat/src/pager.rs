@@ -18,6 +18,7 @@ pub const BLOCK_LINES: usize = 300;
 pub const MIN_OPEN_LINES: usize = 20;
 pub const MAX_LOADED_LINES: usize = 600;
 const RULE_WIDTH: usize = 24;
+const MARKER: char = '\u{E000}';
 
 pub type EntryKey = (String, usize);
 
@@ -26,6 +27,7 @@ pub struct Source<'a> {
     pub ads: &'a AdSettings,
     pub chat: &'a Chat,
     pub name_style: NameStyle<'a>,
+    pub image_width: &'a dyn Fn(&Key) -> u16,
 }
 
 impl Source<'_> {
@@ -67,6 +69,8 @@ pub struct Row {
     pub key: Option<EntryKey>,
     pub kind: RowKind,
     pub images: Vec<Key>,
+    /// For images inside a text line: (column, width) of each image; empty for strips.
+    pub slots: Vec<(u16, u16)>,
 }
 
 #[derive(Default)]
@@ -281,12 +285,12 @@ impl Pager {
         let mut rows = Vec::new();
         let width = self.width.max(1);
         if block.start == 0 {
-            rows.push(Row { segs: Vec::new(), key: None, kind: RowKind::Blank, images: Vec::new() });
+            rows.push(Row { segs: Vec::new(), key: None, kind: RowKind::Blank, images: Vec::new(), slots: Vec::new() });
             let bar = "\u{2500}".repeat(RULE_WIDTH);
             let text = format!("{bar} {} {bar}", block.day);
             let padding = width.saturating_sub(crate::rows::text_width(&text)) / 2;
             let segs = vec![Seg::new(format!("{}{text}", " ".repeat(padding)), dim())];
-            rows.push(Row { segs, key: None, kind: RowKind::Rule, images: Vec::new() });
+            rows.push(Row { segs, key: None, kind: RowKind::Rule, images: Vec::new(), slots: Vec::new() });
         }
         for (offset, line) in block.lines.iter().enumerate() {
             let key = (block.day.clone(), block.start + offset);
@@ -296,17 +300,71 @@ impl Pager {
         rows
     }
 
+    /// A single-line message with text and images: the images stand inside the text line.
+    fn inline_row(&self, src: &Source, line: &str, key: Option<EntryKey>, reveal: bool, width: usize) -> Option<Row> {
+        if line.contains(MARKER) || line.to_ascii_lowercase().contains("[noparse]") {
+            return None;
+        }
+        let (marked, keys) = images::extract_marked(line, images::MAX_PER_MESSAGE, MARKER);
+        if keys.is_empty() {
+            return None;
+        }
+        let message = crate::store::parse_line(&marked).map_or(marked.as_str(), |(_, _, message)| message);
+        if message.replace(MARKER, "").trim().is_empty() {
+            return None;
+        }
+        let mut segs: Vec<Seg> = Vec::new();
+        let mut slots: Vec<(u16, u16)> = Vec::new();
+        let mut x = 0usize;
+        for seg in render_line(&marked, src.name_style, reveal) {
+            if seg.text.contains('\n') {
+                return None;
+            }
+            let mut text = String::new();
+            for c in seg.text.chars() {
+                if c != MARKER {
+                    text.push(c);
+                    x += crate::rows::char_width(c);
+                    continue;
+                }
+                if !text.is_empty() {
+                    segs.push(Seg { text: std::mem::take(&mut text), style: seg.style, link: seg.link.clone() });
+                }
+                let columns = (src.image_width)(keys.get(slots.len())?) as usize;
+                slots.push((x as u16, columns as u16));
+                segs.push(Seg { text: " ".repeat(columns), style: seg.style, link: None });
+                x += columns;
+            }
+            if !text.is_empty() {
+                segs.push(Seg { text, style: seg.style, link: seg.link.clone() });
+            }
+        }
+        if x > width || slots.len() != keys.len() {
+            return None;
+        }
+        Some(Row { segs, key, kind: RowKind::Image, images: keys, slots })
+    }
+
     /// Screen rows of one log line, including the strip reserved for its images.
     fn entry_rows(&self, src: &Source, line: &str, key: Option<EntryKey>, reveal: bool, width: usize) -> Vec<Row> {
+        if self.image_rows > 0 {
+            if let Some(row) = self.inline_row(src, line, key.clone(), reveal, width) {
+                let mut rows = vec![row];
+                for _ in 1..self.image_rows {
+                    rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::ImageCont, images: Vec::new(), slots: Vec::new() });
+                }
+                return rows;
+            }
+        }
         let (text, images) = if self.image_rows > 0 { images::extract(line, images::MAX_PER_MESSAGE) } else { (line.to_string(), Vec::new()) };
         let mut rows: Vec<Row> = wrap(&render_line(&text, src.name_style, reveal), width)
             .into_iter()
-            .map(|segs| Row { segs, key: key.clone(), kind: RowKind::Text, images: Vec::new() })
+            .map(|segs| Row { segs, key: key.clone(), kind: RowKind::Text, images: Vec::new(), slots: Vec::new() })
             .collect();
         if !images.is_empty() {
-            rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::Image, images });
+            rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::Image, images, slots: Vec::new() });
             for _ in 1..self.image_rows {
-                rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::ImageCont, images: Vec::new() });
+                rows.push(Row { segs: Vec::new(), key: key.clone(), kind: RowKind::ImageCont, images: Vec::new(), slots: Vec::new() });
             }
         }
         rows
@@ -325,7 +383,7 @@ impl Pager {
             let text = "Beginning of the log";
             let padding = width.saturating_sub(text.len()) / 2;
             let style = dim().patch(Style::default().add_modifier(ratatui::style::Modifier::ITALIC));
-            rows.push(Row { segs: vec![Seg::new(format!("{}{text}", " ".repeat(padding)), style)], key: None, kind: RowKind::LogStart, images: Vec::new() });
+            rows.push(Row { segs: vec![Seg::new(format!("{}{text}", " ".repeat(padding)), style)], key: None, kind: RowKind::LogStart, images: Vec::new(), slots: Vec::new() });
         }
         for block in &self.blocks {
             rows.extend(self.block_rows(block, src));
@@ -357,7 +415,7 @@ mod tests {
     #[test]
     fn opens_with_last_lines_and_a_day_rule() {
         let (store, ads, chat) = setup("open", 5);
-        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
         let mut pager = Pager::default();
         pager.open(&src, "user:Bob", None, true);
         let rows = pager.rows(&src, 80, 20);
@@ -369,7 +427,7 @@ mod tests {
     #[test]
     fn long_logs_are_windowed_and_load_older_blocks() {
         let (store, ads, chat) = setup("window", 700);
-        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
         let mut pager = Pager::default();
         pager.open(&src, "user:Bob", None, true);
         assert_eq!(pager.loaded_lines(), 300);
@@ -387,7 +445,7 @@ mod tests {
     #[test]
     fn jumps_to_the_start_and_back_to_now() {
         let (store, ads, chat) = setup("jump", 700);
-        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
         let mut pager = Pager::default();
         pager.open(&src, "user:Bob", None, true);
         pager.rows(&src, 80, 20);
@@ -407,7 +465,7 @@ mod tests {
     #[test]
     fn append_follows_the_live_end() {
         let (store, ads, chat) = setup("append", 1);
-        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
         let mut pager = Pager::default();
         pager.open(&src, "user:Bob", None, true);
         let line = store.append(&chat, "Bob", "neu");
@@ -419,12 +477,28 @@ mod tests {
     fn images_reserve_rows_below_the_text() {
         let (store, ads, chat) = setup("img", 0);
         let mut pager = Pager { image_rows: 3, ..Default::default() };
-        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names };
-        let rows = pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon]", None, false, 40);
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
+        let rows = pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: [eicon]cat[/eicon]", None, false, 40);
         let kinds: Vec<&RowKind> = rows.iter().map(|row| &row.kind).collect();
         assert_eq!(kinds, vec![&RowKind::Text, &RowKind::Image, &RowKind::ImageCont, &RowKind::ImageCont]);
         assert_eq!(rows[1].images.len(), 1);
+        assert!(rows[1].slots.is_empty());
         pager.image_rows = 0;
         assert_eq!(pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon]", None, false, 40).len(), 1);
+    }
+
+    #[test]
+    fn images_stand_inside_a_text_line() {
+        let (store, ads, chat) = setup("inline", 0);
+        let pager = Pager { image_rows: 3, ..Default::default() };
+        let src = Source { store: &store, ads: &ads, chat: &chat, name_style: &no_names, image_width: &|_| 8 };
+        let rows = pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon] da", None, false, 60);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].kind, RowKind::Image);
+        assert_eq!(rows[0].slots, vec![(30, 8)]);
+        let text: String = rows[0].segs.iter().map(|seg| seg.text.as_str()).collect();
+        assert_eq!(text, "[2026-11-18 10:00:00] Max: hi          da");
+        let narrow = pager.entry_rows(&src, "[2026-11-18 10:00:00] Max: hi [eicon]cat[/eicon] da", None, false, 30);
+        assert!(narrow.iter().any(|row| row.kind == RowKind::Text), "too narrow: strip below the text");
     }
 }

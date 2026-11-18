@@ -84,6 +84,15 @@ pub fn full_image_url(file_name: &str) -> String {
 /// Replaces `[eicon]name[/eicon]` and `[icon]name[/icon]` (outside `[noparse]`) by nothing and
 /// returns the images found. Tags beyond `limit` stay in the text.
 pub fn extract(line: &str, limit: usize) -> (String, Vec<Key>) {
+    extract_with(line, limit, None)
+}
+
+/// Like `extract`, but every removed tag leaves `marker` in the text.
+pub fn extract_marked(line: &str, limit: usize, marker: char) -> (String, Vec<Key>) {
+    extract_with(line, limit, Some(marker))
+}
+
+fn extract_with(line: &str, limit: usize, marker: Option<char>) -> (String, Vec<Key>) {
     let lower = line.to_ascii_lowercase();
     let mut text = String::with_capacity(line.len());
     let mut keys = Vec::new();
@@ -116,6 +125,7 @@ pub fn extract(line: &str, limit: usize) -> (String, Vec<Key>) {
             text.push_str(&line[start..end]);
         } else {
             keys.push(Key::new(if id == 1 { Kind::Eicon } else { Kind::Avatar }, name));
+            text.extend(marker);
         }
         position = end;
     }
@@ -301,6 +311,18 @@ impl ImageStore {
         let columns = image.width().div_ceil(u32::from(font_width)).max(1);
         let rows = image.height().div_ceil(u32::from(font_height)).max(1);
         Some((columns.min(u32::from(u16::MAX)) as u16, rows.min(u32::from(u16::MAX)) as u16))
+    }
+
+    /// Columns an image takes in a line: its real size once loaded, otherwise an estimate.
+    pub fn slot_width(&self, key: &Key) -> u16 {
+        if let Some(Slot::Ready(_)) = self.slots.get(key) {
+            return self.size_cells(key).map_or(1, |size| size.0);
+        }
+        if let Some(Slot::Missing) = self.slots.get(key) {
+            return crate::rows::text_width(&key.label()).min(u16::MAX as usize) as u16;
+        }
+        let (font_width, font_height) = self.font();
+        (u32::from(self.rows_of(key.kind)) * u32::from(font_height)).div_ceil(u32::from(font_width.max(1))).max(1) as u16
     }
 
     pub fn request(&mut self, key: &Key) {
@@ -546,6 +568,13 @@ mod tests {
         let (text, keys) = extract("hi [eicon]Cat Hug[/eicon] und [icon]Bob[/icon]!", 36);
         assert_eq!(text, "hi  und !");
         assert_eq!(keys, vec![Key::new(Kind::Eicon, "cat hug"), Key::new(Kind::Avatar, "bob")]);
+    }
+
+    #[test]
+    fn marked_extraction_keeps_the_position() {
+        let (text, keys) = extract_marked("a [eicon]x[/eicon] b", 36, '\u{E000}');
+        assert_eq!(text, "a \u{E000} b");
+        assert_eq!(keys.len(), 1);
     }
 
     #[test]

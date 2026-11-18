@@ -380,6 +380,12 @@ impl EditScreen {
             KeyCode::Right => self.input.right(),
             KeyCode::Home => self.input.home(),
             KeyCode::End => self.input.end(),
+            KeyCode::Up => {
+                self.input.move_up();
+            }
+            KeyCode::Down => {
+                self.input.move_down();
+            }
             KeyCode::Char('u') if is_ctrl(&key) => self.input.set_text(""),
             KeyCode::Char('a') if is_ctrl(&key) => self.input.home(),
             KeyCode::Char('e') if is_ctrl(&key) => self.input.end(),
@@ -406,6 +412,8 @@ mod tests {
         assert_eq!(edit.input.text(), "hallo!welt");
         edit.insert("abcdef");
         assert_eq!(edit.input.char_count(), 12);
+        edit.on_key(KeyEvent::from(KeyCode::Up));
+        edit.on_key(KeyEvent::from(KeyCode::Down));
         edit.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
         assert!(edit.input.text().ends_with('\n') || edit.input.char_count() == 12);
         assert!(matches!(edit.on_key(KeyEvent::from(KeyCode::Enter)), Action::Edit(_)));

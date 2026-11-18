@@ -1250,9 +1250,10 @@ impl App {
     pub fn pager_op<R>(&mut self, f: impl FnOnce(&mut Pager, &Source) -> R) -> Option<R> {
         let id = self.active_chat.clone()?;
         let chat = self.store.get(&id)?.clone();
-        let App { pager, store, ads, genders, .. } = self;
+        let App { pager, store, ads, genders, images, .. } = self;
         let name_style = |name: &str| gender_style(genders.get(name));
-        let source = Source { store, ads, chat: &chat, name_style: &name_style };
+        let image_width = |key: &Key| images.slot_width(key);
+        let source = Source { store, ads, chat: &chat, name_style: &name_style, image_width: &image_width };
         Some(f(pager, &source))
     }
 
