@@ -89,7 +89,10 @@ fn handle(app: &mut App, event: AppEvent) {
         AppEvent::Connected(generation, result) => app.on_connected(generation, result),
         AppEvent::Profile(name, result) => app.on_profile(&name, result),
         AppEvent::Image(key, frames) => app.images.on_loaded(key, frames),
-        AppEvent::Attached(attached) => app.images.attached = attached,
+        AppEvent::Attached(attached, left, top) => {
+            app.images.attached = attached;
+            app.images.set_pane(left, top);
+        }
     }
 }
 
@@ -111,8 +114,7 @@ async fn run(config: Config) -> std::io::Result<()> {
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        if app.images.take_stale() {
-            terminal.clear()?;
+        if app.images.needs_repaint() {
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
         }
         for sequence in app.osc_queue.drain(..) {

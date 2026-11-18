@@ -48,7 +48,7 @@ pub enum AppEvent {
     Profile(String, Result<fchat::Profile, String>),
     Image(Key, Option<Frames>),
     /// Whether a tmux client is attached (animations pause while detached).
-    Attached(bool),
+    Attached(bool, u16, u16),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -615,10 +615,15 @@ impl App {
         if self.ticks.is_multiple_of(5) && self.images.enabled() && std::env::var_os("TMUX").is_some() {
             let tx = self.tx.clone();
             std::thread::spawn(move || {
-                let output = std::process::Command::new("tmux").args(["display-message", "-p", "#{session_attached}"]).output();
+                let format = "#{session_attached} #{pane_left} #{pane_top}";
+                let output = std::process::Command::new("tmux").args(["display-message", "-p", format]).output();
                 if let Ok(output) = output {
-                    let attached = String::from_utf8_lossy(&output.stdout).trim().parse::<u32>().is_ok_and(|count| count > 0);
-                    let _ = tx.send(AppEvent::Attached(attached));
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    let mut fields = text.split_whitespace();
+                    let attached = fields.next().and_then(|field| field.parse::<u32>().ok()).is_some_and(|count| count > 0);
+                    let left = fields.next().and_then(|field| field.parse::<u16>().ok()).unwrap_or(0);
+                    let top = fields.next().and_then(|field| field.parse::<u16>().ok()).unwrap_or(0);
+                    let _ = tx.send(AppEvent::Attached(attached, left, top));
                 }
             });
         }

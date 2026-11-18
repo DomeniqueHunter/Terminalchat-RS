@@ -91,6 +91,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.set_cursor_position(position);
     }
     app.images.end_frame();
+    app.images.draw_erased(frame);
 }
 
 // ------------------------------------------------------------------ title

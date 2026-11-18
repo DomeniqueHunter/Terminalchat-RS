@@ -9,9 +9,11 @@ use std::time::{Duration, Instant, SystemTime};
 use image::codecs::gif::GifDecoder;
 use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, ImageFormat, RgbaImage};
+use ratatui::buffer::CellDiffOption;
 use ratatui::layout::{Rect, Size};
 use ratatui::Frame;
 use ratatui_image::picker::{Picker, ProtocolType};
+use ratatui_image::protocol::sixel::Sixel;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{FontSize, Image, Resize};
 use tokio::sync::mpsc::UnboundedSender;
@@ -28,6 +30,7 @@ pub const THUMB_COLUMNS: usize = 5;
 const MAX_MEMORY_IMAGES: usize = 100;
 const MAX_FRAMES: usize = 60;
 /// More animated images than this on screen: none of them animates (saves bandwidth, e.g. over SSH).
+const TMUX_START: &str = "\x1bPtmux;";
 const MAX_ANIMATED: usize = 12;
 const MIN_FRAME_MILLIS: u32 = 100;
 const MAX_ASPECT: u32 = 4;
@@ -177,7 +180,9 @@ pub struct ImageStore {
     drawn: HashSet<Key>,
     areas: Vec<Rect>,
     last_areas: Vec<Rect>,
-    stale: bool,
+    erase: Vec<Rect>,
+    repaint: Vec<Rect>,
+    pane: (u16, u16),
     visible: HashSet<Key>,
     animating: HashSet<Key>,
     clock: u64,
@@ -198,6 +203,32 @@ fn parse_cell_size(text: &str) -> Option<(u16, u16)> {
     let (width, height) = text.trim().to_lowercase().split_once('x').map(|(w, h)| (w.trim().to_string(), h.trim().to_string()))?;
     let (width, height) = (width.parse::<u16>().ok()?, height.parse::<u16>().ok()?);
     (width > 0 && height > 0).then_some((width, height))
+}
+
+fn tmux_native_wanted() -> bool {
+    match std::env::var("TERMINALCHAT_TMUX_NATIVE") {
+        Ok(value) => !matches!(value.trim(), "" | "0" | "no" | "false"),
+        Err(_) => false,
+    }
+}
+
+/// Switches the tmux detection off, so the image is written into the session like ordinary output
+/// and tmux draws it itself. Only on request: tmux scales the image to its own grid and rebuilds it
+/// for every frame, which looks smaller and runs slower than the passthrough.
+fn without_tmux(picker: &Picker) -> Picker {
+    let term = std::env::var_os("TERM");
+    let term_program = std::env::var_os("TERM_PROGRAM");
+    std::env::set_var("TERM", "xterm-256color");
+    std::env::remove_var("TERM_PROGRAM");
+    let picker = rebuilt(picker, picker.font_size());
+    match term {
+        Some(value) => std::env::set_var("TERM", value),
+        None => std::env::remove_var("TERM"),
+    }
+    if let Some(value) = term_program {
+        std::env::set_var("TERM_PROGRAM", value);
+    }
+    picker
 }
 
 fn protocol_by_name(name: &str) -> Option<ProtocolType> {
@@ -243,6 +274,9 @@ pub fn detect_picker(config: &Config) -> Option<Picker> {
     if picker.protocol_type() == ProtocolType::Halfblocks {
         return None;
     }
+    if picker.tmux_detected() && tmux_native_wanted() {
+        picker = without_tmux(&picker);
+    }
     Some(picker)
 }
 
@@ -265,7 +299,9 @@ impl ImageStore {
             drawn: HashSet::new(),
             areas: Vec::new(),
             last_areas: Vec::new(),
-            stale: false,
+            erase: Vec::new(),
+            repaint: Vec::new(),
+            pane: (0, 0),
             visible: HashSet::new(),
             animating: HashSet::new(),
             clock: 0,
@@ -400,17 +436,56 @@ impl ImageStore {
         self.areas.clear();
     }
 
-    /// True when an image left a place it was drawn at: the terminal may keep its pixels, so the
-    /// caller repaints the whole screen once.
-    pub fn take_stale(&mut self) -> bool {
-        std::mem::take(&mut self.stale)
+    /// Erases the places of images that are gone. Text written over a Sixel image does not remove
+    /// its pixels, so the area is erased with the same sequence the library puts in front of an
+    /// image. Call at the end of a frame, after `end_frame`.
+    pub fn draw_erased(&mut self, frame: &mut Frame) {
+        // The erase of the frame before took the text of those cells with it: they carry the right
+        // content but were skipped, so the diff of this frame would not write them.
+        for area in std::mem::take(&mut self.repaint) {
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                        cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+                    }
+                }
+            }
+        }
+        let areas = std::mem::take(&mut self.erase);
+        let Some(picker) = &self.picker else { return };
+        if picker.protocol_type() != ProtocolType::Sixel {
+            return;
+        }
+        let is_tmux = picker.tmux_detected();
+        let pane = self.pane;
+        for area in &areas {
+            let protocol = erase_protocol(*area, is_tmux, pane);
+            frame.render_widget(Image::new(&protocol), *area);
+        }
+        self.repaint = areas;
+    }
+
+    /// Where the tmux pane sits in the terminal, for the absolute position of an image.
+    pub fn set_pane(&mut self, left: u16, top: u16) {
+        self.pane = (left, top);
+    }
+
+    /// True while cells of an erased area still wait for their text.
+    pub fn needs_repaint(&self) -> bool {
+        !self.repaint.is_empty()
     }
 
     pub fn end_frame(&mut self) {
         self.visible = std::mem::take(&mut self.drawn);
-        if self.last_areas.iter().any(|area| !self.areas.contains(area)) {
-            self.stale = true;
-        }
+        // Only where nothing is drawn now: an image that moved overlaps its old place, and the
+        // erase would cut a hole into the image that was just drawn.
+        self.erase = self
+            .last_areas
+            .iter()
+            .filter(|area| area.width > 0 && area.height > 0)
+            .filter(|area| !self.areas.iter().any(|drawn| drawn.intersects(**area)))
+            .copied()
+            .collect();
         self.last_areas = std::mem::take(&mut self.areas);
         let candidates: HashSet<Key> = self
             .visible
@@ -481,6 +556,8 @@ impl ImageStore {
             Some(Slot::Ready(loaded)) => self.frame_index(key, loaded),
             _ => return false,
         };
+        let is_tmux = picker.tmux_detected();
+        let pane = self.pane;
         self.clock += 1;
         let clock = self.clock;
         let Some(Slot::Ready(loaded)) = self.slots.get_mut(key) else { return false };
@@ -497,6 +574,18 @@ impl ImageStore {
         // The library erases the area before every Sixel image. Over a slow link that shows as
         // flicker, so a new frame at the same place is drawn over the old one without erasing.
         let same_place = loaded.last.is_some_and(|(last_area, last_index)| last_area == area && last_index != index);
+        if is_tmux {
+            let base = if same_place && loaded.quiet.contains_key(&index) { &loaded.quiet[&index] } else { &loaded.protocols[&index] };
+            let mut placed = base.clone();
+            if let Protocol::Sixel(sixel) = &mut placed {
+                sixel.data = with_position(&sixel.data, area, pane);
+            }
+            frame.render_widget(Image::new(&placed), area);
+            loaded.last = Some((area, index));
+            self.drawn.insert(key.clone());
+            self.areas.push(area);
+            return true;
+        }
         if same_place {
             if !loaded.quiet.contains_key(&index) {
                 let mut protocol = loaded.protocols[&index].clone();
@@ -512,6 +601,35 @@ impl ImageStore {
         self.areas.push(area);
         true
     }
+}
+
+/// Positions the cursor of the outer terminal before a passthrough payload. tmux forwards the
+/// payload without reading it and without moving that cursor, so the image would land wherever the
+/// cursor happens to stand.
+fn with_position(data: &str, area: Rect, pane: (u16, u16)) -> String {
+    let (row, column) = (pane.1 + area.y + 1, pane.0 + area.x + 1);
+    let body = data.strip_prefix(TMUX_START).unwrap_or(data);
+    format!("{TMUX_START}\x1b\x1b[{row};{column}H{body}")
+}
+
+/// An image-less Sixel protocol that only carries the erase sequence for its area.
+fn erase_protocol(area: Rect, is_tmux: bool, pane: (u16, u16)) -> Protocol {
+    let (width, height) = (area.width, area.height);
+    let (start, escape, end) = if is_tmux { (TMUX_START, "\x1b\x1b", "\x1b\\") } else { ("", "\x1b", "") };
+    let mut data = String::from(start);
+    if height == 1 {
+        data.push_str(&format!("{escape}[{width}X"));
+    } else {
+        for _ in 0..height {
+            data.push_str(&format!("{escape}[{width}X{escape}[1B"));
+        }
+        data.push_str(&format!("{escape}[{height}A"));
+    }
+    data.push_str(end);
+    if is_tmux {
+        data = with_position(&data, area, pane);
+    }
+    Protocol::Sixel(Sixel { data, size: Size::new(width, height), is_tmux })
 }
 
 /// Removes the erase sequence in front of the Sixel data (not inside tmux passthrough).
@@ -793,5 +911,79 @@ mod tests {
         assert_eq!(parse_cell_size(" 9 X 20 "), Some((9, 20)));
         assert_eq!(parse_cell_size("0x18"), None);
         assert_eq!(parse_cell_size("abc"), None);
+    }
+
+    #[test]
+    fn a_gone_image_gets_its_area_erased() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut store = ImageStore::new(tx);
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Sixel);
+        store.picker = Some(picker);
+        let key = Key::new(Kind::Eicon, "cat");
+        store.slots.insert(key.clone(), Slot::Loading);
+        store.on_loaded(key.clone(), Some(vec![(RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100))]));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 5)).unwrap();
+        let area = Rect::new(1, 1, 2, 2);
+        terminal
+            .draw(|frame| {
+                store.begin_frame();
+                store.render(frame, &key, area);
+                store.end_frame();
+                store.draw_erased(frame);
+            })
+            .unwrap();
+        terminal
+            .draw(|frame| {
+                store.begin_frame();
+                store.end_frame();
+                store.draw_erased(frame);
+            })
+            .unwrap();
+        let cell = terminal.backend().buffer().cell((1, 1)).unwrap().symbol().to_string();
+        assert_eq!(cell, "\x1b[2X\x1b[1B\x1b[2X\x1b[1B\x1b[2A");
+    }
+
+    #[test]
+    fn an_image_that_moved_does_not_erase_its_new_place() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut store = ImageStore::new(tx);
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Sixel);
+        store.picker = Some(picker);
+        let key = Key::new(Kind::Eicon, "cat");
+        store.slots.insert(key.clone(), Slot::Loading);
+        store.on_loaded(key.clone(), Some(vec![(RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100))]));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 6)).unwrap();
+        for row in [3, 2] {
+            terminal
+                .draw(|frame| {
+                    store.begin_frame();
+                    store.render(frame, &key, Rect::new(1, row, 2, 2));
+                    store.end_frame();
+                    store.draw_erased(frame);
+                })
+                .unwrap();
+        }
+        assert!(store.erase.is_empty(), "the new place overlaps the old one");
+        terminal
+            .draw(|frame| {
+                store.begin_frame();
+                store.render(frame, &key, Rect::new(6, 0, 2, 2));
+                store.end_frame();
+                store.draw_erased(frame);
+            })
+            .unwrap();
+        assert_eq!(store.erase, Vec::new());
+        let cell = terminal.backend().buffer().cell((1, 2)).unwrap().symbol().to_string();
+        assert_eq!(cell, "\x1b[2X\x1b[1B\x1b[2X\x1b[1B\x1b[2A", "the place it left is erased");
+    }
+
+    #[test]
+    fn a_tmux_payload_carries_its_own_position() {
+        let placed = with_position("\x1bPtmux;\x1b\x1b[4Xrest", Rect::new(2, 5, 4, 1), (0, 0));
+        assert_eq!(placed, "\x1bPtmux;\x1b\x1b[6;3H\x1b\x1b[4Xrest");
+        let shifted = with_position("\x1bPtmux;body", Rect::new(0, 0, 1, 1), (10, 3));
+        assert_eq!(shifted, "\x1bPtmux;\x1b\x1b[4;11Hbody");
     }
 }
