@@ -2,8 +2,10 @@
 # Launcher: runs the client inside tmux so that /minimize (detach) keeps it running.
 set -euo pipefail
 
-SESSION="terminalchat"
-SOCKET="terminalchat"
+# Own tmux server, so that the Python version (session "terminalchat") and this one never share
+# a session.
+SESSION="terminalchat-rs"
+SOCKET="terminalchat-rs"
 BASE_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ARCH="$(uname -m)"
 

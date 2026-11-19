@@ -49,7 +49,7 @@ build_arm64() {
 # Ends the running client cleanly (SIGTERM, it saves its files) and starts the new binary in the
 # same tmux pane, so an attached window shows the new version at once.
 restart_client() {
-    local session="terminalchat"
+    local session="terminalchat-rs"
     tmux_cmd() {
         env -u TMUX tmux -L "${session}" -f "tmux.conf" "$@"
     }

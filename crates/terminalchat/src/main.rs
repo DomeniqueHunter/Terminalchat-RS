@@ -19,7 +19,7 @@ mod style;
 mod ui;
 
 use std::io::{stdout, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use ratatui::crossterm::execute;
@@ -29,6 +29,8 @@ use app::{App, AppEvent};
 use config::Config;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Shortest time between two drawings for animations (20 per second, like the shortest GIF frame).
+const ANIMATION_STEP: Duration = Duration::from_millis(50);
 
 fn print_help() {
     println!("terminalchat {VERSION} - terminal client for F-Chat (f-list.net)");
@@ -134,13 +136,17 @@ async fn run(config: Config) -> std::io::Result<()> {
     app.start();
 
     loop {
+        let drawing = Instant::now();
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        // Animations wait at least ANIMATION_STEP, and twice as long as the last drawing took
+        // (slow over SSH): all GIFs due by then advance in one drawing instead of one each.
+        let next_animation = Instant::now() + ANIMATION_STEP.max(drawing.elapsed() * 2);
         for sequence in app.osc_queue.drain(..) {
             let mut out = stdout();
             out.write_all(sequence.as_bytes())?;
             out.flush()?;
         }
-        let event = match app.images.next_wake() {
+        let event = match app.images.next_wake().map(|due| due.max(next_animation)) {
             Some(due) => tokio::select! {
                 event = rx.recv() => event,
                 () = tokio::time::sleep_until(tokio::time::Instant::from_std(due)) => continue,

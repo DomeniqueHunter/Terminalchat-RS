@@ -3,7 +3,7 @@
 # binary, so stop it before starting a freshly built client.
 set -euo pipefail
 
-SOCKET="terminalchat"
+SOCKET="terminalchat-rs"
 
 if ! command -v tmux >/dev/null 2>&1; then
     echo "tmux not found - nothing to stop"
