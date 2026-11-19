@@ -33,6 +33,8 @@ pub enum Action {
     ResetColor(String),
     /// Everything of one tab of the settings page back to default.
     ResetTab(Tab),
+    /// Opens or copies a link, e.g. "o" on a profile.
+    OpenLink(String),
 }
 
 pub enum Screen {
@@ -61,7 +63,10 @@ impl Screen {
     /// Scrolls by mouse wheel (positive: down).
     pub fn scroll(&mut self, rows: isize) {
         match self {
-            Screen::Profile(screen) => screen.scroll = screen.scroll.saturating_add_signed(rows),
+            Screen::Profile(screen) => {
+                let scroll = screen.scroll_mut();
+                *scroll = scroll.saturating_add_signed(rows);
+            }
             Screen::Info(screen) => screen.scroll = screen.scroll.saturating_add_signed(rows),
             Screen::Picker(screen) => screen.move_selection(rows),
             Screen::Character(screen) => screen.move_selection(rows),
@@ -183,25 +188,65 @@ impl CharacterScreen {
 
 // ------------------------------------------------------------------ profile
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProfileTab {
+    Info,
+    Description,
+    Kinks,
+    Images,
+}
+
+pub const PROFILE_TABS: [ProfileTab; 4] = [ProfileTab::Info, ProfileTab::Description, ProfileTab::Kinks, ProfileTab::Images];
+
+/// A profile like in the Python version: a header with avatar, name, status and link, below it
+/// the tabs Info, Description, Kinks and Images, each scrolled on its own.
 pub struct ProfileScreen {
     pub character: String,
     pub result: Option<Result<fchat::Profile, String>>,
-    pub scroll: usize,
+    pub tab: ProfileTab,
+    pub scroll: [usize; 4],
+    /// Click areas of the tabs, filled when drawn.
+    pub tab_hits: Vec<(Rect, ProfileTab)>,
 }
 
 impl ProfileScreen {
     pub fn new(character: &str) -> ProfileScreen {
-        ProfileScreen { character: character.to_string(), result: None, scroll: 0 }
+        ProfileScreen { character: character.to_string(), result: None, tab: ProfileTab::Info, scroll: [0; 4], tab_hits: Vec::new() }
+    }
+
+    pub fn scroll_mut(&mut self) -> &mut usize {
+        &mut self.scroll[self.tab as usize]
+    }
+
+    fn step_tab(&mut self, step: isize) {
+        let position = PROFILE_TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0) as isize;
+        self.tab = PROFILE_TABS[(position + step).rem_euclid(PROFILE_TABS.len() as isize) as usize];
+    }
+
+    /// A click on a tab switches to it.
+    pub fn click_tab(&mut self, column: u16, row: u16) -> bool {
+        let hit = self.tab_hits.iter().find(|(area, _)| column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height);
+        match hit {
+            Some((_, tab)) => {
+                self.tab = *tab;
+                true
+            }
+            None => false,
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Action {
+        let scroll = self.scroll_mut();
         match key.code {
-            KeyCode::Up => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down => self.scroll += 1,
-            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(15),
-            KeyCode::PageDown => self.scroll += 15,
-            KeyCode::Home => self.scroll = 0,
-            KeyCode::End => self.scroll = usize::MAX / 2,
+            KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::Down => *scroll += 1,
+            KeyCode::PageUp => *scroll = scroll.saturating_sub(15),
+            KeyCode::PageDown => *scroll += 15,
+            KeyCode::Home => *scroll = 0,
+            KeyCode::End => *scroll = usize::MAX / 2,
+            KeyCode::Left | KeyCode::BackTab => self.step_tab(-1),
+            KeyCode::Right | KeyCode::Tab => self.step_tab(1),
+            KeyCode::Char('o') => return Action::OpenLink(crate::bbcode::profile_url(&self.character)),
             KeyCode::Esc | KeyCode::Char('q') => return Action::Close,
             _ => {}
         }
@@ -913,5 +958,21 @@ mod tests {
         assert!(!screen.confirm_reset);
         press(&mut screen, KeyCode::Char('R'));
         assert!(matches!(press(&mut screen, KeyCode::Char('y')), Action::ResetTab(Tab::Colors)));
+    }
+
+    #[test]
+    fn profile_tabs_switch_and_scroll_on_their_own() {
+        let mut profile = ProfileScreen::new("Somebody");
+        profile.on_key(KeyEvent::from(KeyCode::Down));
+        profile.on_key(KeyEvent::from(KeyCode::Down));
+        profile.on_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!(profile.tab, ProfileTab::Description);
+        assert_eq!(*profile.scroll_mut(), 0);
+        profile.on_key(KeyEvent::from(KeyCode::BackTab));
+        profile.on_key(KeyEvent::from(KeyCode::Left));
+        assert_eq!(profile.tab, ProfileTab::Images);
+        profile.on_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!((profile.tab, profile.scroll[0]), (ProfileTab::Info, 2));
+        assert!(matches!(profile.on_key(KeyEvent::from(KeyCode::Char('o'))), Action::OpenLink(url) if url.ends_with("/c/Somebody")));
     }
 }

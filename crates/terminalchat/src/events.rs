@@ -276,6 +276,7 @@ fn apply_action(app: &mut App, action: Action) {
             let result = app.reset_tab(tab);
             settings_done(app, result);
         }
+        Action::OpenLink(url) => app.open_link(&url, None),
     }
 }
 
@@ -339,9 +340,18 @@ fn on_click(app: &mut App, column: u16, row: u16) {
         apply_action(app, action);
         return;
     }
+    if let Some(Screen::Profile(profile)) = app.screens.last_mut() {
+        if profile.click_tab(column, row) {
+            return;
+        }
+    }
     if !app.screens.is_empty() {
         let link = app.regions.modal_links.iter().find(|(rect, _)| contains(rect, column, row)).map(|(_, link)| link.clone());
         if let Some(link) = link {
+            let internal = link.starts_with(crate::bbcode::USER_LINK) || link.starts_with(crate::bbcode::CHANNEL_LINK);
+            if internal && matches!(app.screens.last(), Some(Screen::Profile(_))) {
+                app.screens.pop();
+            }
             app.open_link(&link, None);
         }
         return;

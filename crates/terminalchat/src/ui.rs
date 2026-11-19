@@ -14,7 +14,7 @@ use crate::commands::{command_usage, matching_commands, resolve_alias, COMMAND_I
 use crate::pager::RowKind;
 use crate::rows::{char_width, text_width, wrap};
 use crate::sanitize::html_unescape;
-use crate::screens::{ColorEditor, ColorPart, Hit, Screen, SettingsEdit, SettingsScreen, Tab};
+use crate::screens::{ColorEditor, ColorPart, Hit, ProfileScreen, ProfileTab, Screen, SettingsEdit, SettingsScreen, Tab, PROFILE_TABS};
 use crate::store::{CHANNEL, CONSOLE, USER};
 use crate::style::{bold, color, dim, reversed, status_style, status_symbol};
 
@@ -680,19 +680,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             frame.render_widget(Paragraph::new(lines), inner);
             footer(frame, outer, "enter: choose, esc: cancel");
         }
-        Screen::Profile(profile) => {
-            let outer = centered(area, (area.width * 8 / 10).max(40), (area.height * 9 / 10).max(10));
-            let inner = modal(frame, outer, &format!("Profile: {}", profile.character));
-            let lines = match &profile.result {
-                None => vec![PItem::Text(vec![Seg::new("Loading...", dim())])],
-                Some(Err(error)) => vec![PItem::Text(vec![Seg::new(error.clone(), color("error"))])],
-                Some(Ok(data)) => profile_lines(app, data),
-            };
-            let body = rect(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
-            let avatar = app.images.enabled().then(|| Key::new(Kind::Avatar, &profile.character));
-            draw_profile(frame, app, body, &lines, avatar, &mut profile.scroll);
-            footer(frame, outer, "up/down/page: scroll, esc: close, click an image: copy its link");
-        }
+        Screen::Profile(profile) => draw_profile(frame, app, area, profile),
         Screen::Info(info) => {
             let width = if info.wide { (area.width * 8 / 10).max(40) } else { 70 };
             let wrapped: usize = info.lines.iter().map(|line| wrap(line, width.saturating_sub(4) as usize).len()).sum();
@@ -1063,127 +1051,231 @@ fn format_time(timestamp: i64) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-pub enum PItem {
-    Text(Vec<Seg>),
-    /// Thumbnails: (image, link to the full image, description).
-    Thumbs(Vec<(Key, String, String)>),
-}
-
-type StripItems = Vec<(Key, Option<String>)>;
-type ProfileStrip = (u16, StripItems, u16, bool);
-
+/// One row of a profile tab: text, the first row of an image strip, or a row the strip covers.
 enum PRow {
     Text(Vec<Seg>),
-    Strip(Vec<(Key, Option<String>)>, u16),
+    /// Images, the strip height in rows and their places (column, width); empty: side by side.
+    Strip(Vec<(Key, Option<String>)>, u16, Vec<(u16, u16)>),
     Cont,
 }
 
-pub fn profile_lines(app: &App, profile: &fchat::Profile) -> Vec<PItem> {
-    let mut lines: Vec<Vec<Seg>> = Vec::new();
-    let name_style = |name: &str| app.name_style(name);
-    lines.push(vec![Seg::new(profile.name.clone(), app.name_style(&profile.name).patch(bold()))]);
-    if !profile.title.is_empty() {
-        lines.push(vec![Seg::new(profile.title.clone(), dim())]);
-    }
-    lines.push(vec![Seg::new(
-        format!("Views {}  \u{b7}  Created {}  \u{b7}  Updated {}", profile.views, format_time(profile.created), format_time(profile.updated)),
-        dim(),
-    )]);
-    lines.push(vec![Seg::linked(crate::bbcode::profile_url(&profile.name), crate::style::url_style(), crate::bbcode::profile_url(&profile.name))]);
-    lines.push(Vec::new());
-    lines.extend(split_lines(&to_segs(&profile.description, &name_style, true)));
-    for (group, items) in &profile.infotags {
-        lines.push(Vec::new());
-        lines.push(vec![Seg::new(group.clone(), bold())]);
-        for (label, value) in items {
-            lines.push(vec![Seg::new(format!("  {label}: "), dim()), Seg::new(value.clone(), Style::default())]);
-        }
-    }
-    for (choice, names) in &profile.kinks {
-        if names.is_empty() {
-            continue;
-        }
-        lines.push(Vec::new());
-        let mut label = choice.clone();
-        if let Some(first) = label.get_mut(0..1) {
-            first.make_ascii_uppercase();
-        }
-        lines.push(vec![Seg::new(format!("Kinks \u{2014} {label} ({})", names.len()), bold())]);
-        lines.push(vec![Seg::new(names.join(", "), Style::default())]);
-    }
-    let mut items: Vec<PItem> = lines.into_iter().map(PItem::Text).collect();
-    if !profile.images.is_empty() {
-        items.push(PItem::Text(Vec::new()));
-        items.push(PItem::Text(vec![Seg::new(format!("Images ({})", profile.images.len()), bold())]));
-        if app.images.enabled() {
-            let thumbs = profile.images.iter().map(|(file, description)| (Key::new(Kind::Thumb, file), full_image_url(file), description.clone())).collect();
-            items.push(PItem::Thumbs(thumbs));
-        } else {
-            for (_, description) in &profile.images {
-                if !description.is_empty() {
-                    items.push(PItem::Text(vec![Seg::new(format!("  {description}"), dim())]));
-                }
-            }
-        }
-    }
-    items
-}
+const PROFILE_GUTTER: usize = 2;
+const IMAGE_TEXT_ROWS: usize = 2;
+const KINK_TITLES: [(&str, &str); 4] = [("fave", "Favorites"), ("yes", "Yes"), ("maybe", "Maybe"), ("no", "No")];
 
-fn push_strip(rows: &mut Vec<PRow>, items: Vec<(Key, Option<String>)>, height: u16) {
-    rows.push(PRow::Strip(items, height));
+fn push_strip(rows: &mut Vec<PRow>, items: Vec<(Key, Option<String>)>, height: u16, slots: Vec<(u16, u16)>) {
+    rows.push(PRow::Strip(items, height, slots));
     for _ in 1..height {
         rows.push(PRow::Cont);
     }
 }
 
-fn expand_profile(app: &mut App, items: &[PItem], avatar: Option<Key>, width: usize) -> Vec<PRow> {
-    let mut rows: Vec<PRow> = Vec::new();
-    if let Some(key) = avatar {
-        push_strip(&mut rows, vec![(key, None)], images::AVATAR_ROWS);
-        rows.push(PRow::Text(Vec::new()));
+fn heading() -> Style {
+    bold().patch(crate::style::underlined())
+}
+
+/// Text lines right of the avatar: name and title, status, dates, link.
+fn profile_header(app: &App, screen: &ProfileScreen) -> Vec<Vec<Seg>> {
+    let name = match &screen.result {
+        Some(Ok(profile)) if !profile.name.is_empty() => profile.name.clone(),
+        _ => screen.character.clone(),
+    };
+    let mut first = vec![Seg::new(name.clone(), bold().patch(app.name_style(&name)))];
+    let profile = match &screen.result {
+        None => return vec![first, vec![Seg::new("Loading ...", dim())]],
+        Some(Err(error)) => return vec![first, vec![Seg::new(format!("Could not load the profile: {error}"), color("error"))]],
+        Some(Ok(profile)) => profile,
+    };
+    if !profile.title.is_empty() {
+        first.push(Seg::new(format!("  {}", profile.title), crate::style::italic()));
     }
-    let (font_width, font_height) = app.images.font();
-    let estimate = (u32::from(images::THUMB_ROWS) * u32::from(font_height)).div_ceil(u32::from(font_width.max(1))) as usize;
-    for item in items {
-        match item {
-            PItem::Text(line) => rows.extend(wrap(line, width).into_iter().map(PRow::Text)),
-            PItem::Thumbs(thumbs) => {
-                let mut group: Vec<(Key, Option<String>)> = Vec::new();
-                let mut notes: Vec<String> = Vec::new();
-                let mut used = 0usize;
-                let flush = |rows: &mut Vec<PRow>, group: &mut Vec<(Key, Option<String>)>, notes: &mut Vec<String>, used: &mut usize| {
-                    if group.is_empty() {
-                        return;
-                    }
-                    push_strip(rows, std::mem::take(group), images::THUMB_ROWS);
-                    rows.extend(notes.drain(..).map(|note| PRow::Text(vec![Seg::new(note, dim())])));
-                    *used = 0;
-                };
-                for (number, (key, link, description)) in thumbs.iter().enumerate() {
-                    app.images.request(key);
-                    let columns = app.images.size_cells(key).map_or(estimate, |size| size.0 as usize);
-                    if !group.is_empty() && (used + columns > width || group.len() >= images::THUMB_COLUMNS) {
-                        flush(&mut rows, &mut group, &mut notes, &mut used);
-                    }
-                    group.push((key.clone(), Some(link.clone())));
-                    if !description.is_empty() {
-                        notes.push(format!("  {}. {description}", number + 1));
-                    }
-                    used += columns + 1;
-                }
-                flush(&mut rows, &mut group, &mut notes, &mut used);
+    let mut lines = vec![first];
+    let name_style = |name: &str| app.name_style(name);
+    match app.presence.status_of(&name) {
+        None => lines.push(vec![Seg::new("offline", dim())]),
+        Some((status, message)) => {
+            let mut segs = vec![Seg::new(status.clone(), status_style(&status))];
+            if !message.is_empty() {
+                segs.push(Seg::new(": ", Style::default()));
+                segs.extend(to_segs(&message, &name_style, true));
             }
+            lines.extend(split_lines(&segs));
+        }
+    }
+    lines.push(vec![Seg::new(
+        format!("Created {} \u{b7} updated {} \u{b7} {} views", format_time(profile.created), format_time(profile.updated), profile.views),
+        dim(),
+    )]);
+    let url = crate::bbcode::profile_url(&name);
+    lines.push(vec![Seg::linked(url.clone(), crate::style::url_style(), url)]);
+    lines
+}
+
+fn info_rows(app: &App, profile: &fchat::Profile, width: usize) -> Vec<PRow> {
+    let name_style = |name: &str| app.name_style(name);
+    let mut lines: Vec<Vec<Seg>> = Vec::new();
+    for (group, entries) in &profile.infotags {
+        if !lines.is_empty() {
+            lines.push(Vec::new());
+        }
+        lines.push(vec![Seg::new(group.clone(), heading())]);
+        let label_width = entries.iter().map(|(label, _)| text_width(label)).max().unwrap_or(0) + 2;
+        for (label, value) in entries {
+            let mut line = vec![Seg::new(pad(&format!("{label}:"), label_width), dim())];
+            line.extend(to_segs(value, &name_style, true));
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(vec![Seg::new("(no details)", dim())]);
+    }
+    lines.iter().flat_map(|line| wrap(line, width)).map(PRow::Text).collect()
+}
+
+fn description_rows(app: &App, profile: &fchat::Profile, width: usize) -> Vec<PRow> {
+    let name_style = |name: &str| app.name_style(name);
+    let lines = if profile.description.trim().is_empty() {
+        vec![vec![Seg::new("(no description)", dim())]]
+    } else {
+        split_lines(&to_segs(&profile.description, &name_style, true))
+    };
+    lines.iter().flat_map(|line| wrap(line, width)).map(PRow::Text).collect()
+}
+
+/// Breaks a text into lines of at most `width` cells, at word boundaries where possible.
+fn chunks(text: &str, width: usize) -> Vec<String> {
+    wrap(&[Seg::new(text, Style::default())], width)
+        .iter()
+        .map(|row| row.iter().map(|seg| seg.text.as_str()).collect::<String>().trim_end().to_string())
+        .collect()
+}
+
+/// Kinks in columns side by side like in the Python version: Favorites, Yes, Maybe, No.
+fn kink_rows(profile: &fchat::Profile, width: usize) -> Vec<PRow> {
+    let per_band = if width >= 4 * 12 + 3 * PROFILE_GUTTER { 4 } else if width >= 2 * 12 + PROFILE_GUTTER { 2 } else { 1 };
+    let column = ((width.saturating_sub(PROFILE_GUTTER * (per_band - 1))) / per_band).max(1);
+    let columns: Vec<Vec<(String, Style)>> = KINK_TITLES
+        .iter()
+        .map(|(choice, title)| {
+            let names = profile.kinks.iter().find(|(key, _)| key == choice).map(|(_, names)| names.as_slice()).unwrap_or(&[]);
+            let mut lines = vec![(fit(&format!("{title} ({})", names.len()), column), heading())];
+            for name in names {
+                lines.extend(chunks(name, column).into_iter().map(|piece| (piece, Style::default())));
+            }
+            lines
+        })
+        .collect();
+    let mut rows = Vec::new();
+    for band in columns.chunks(per_band) {
+        if !rows.is_empty() {
+            rows.push(PRow::Text(Vec::new()));
+        }
+        let height = band.iter().map(Vec::len).max().unwrap_or(0);
+        for index in 0..height {
+            let mut segs = Vec::new();
+            for (number, lines) in band.iter().enumerate() {
+                if number > 0 {
+                    segs.push(Seg::new(" ".repeat(PROFILE_GUTTER), Style::default()));
+                }
+                let (text, style) = lines.get(index).cloned().unwrap_or_default();
+                let fill = column.saturating_sub(text_width(&text));
+                segs.push(Seg::new(text, style));
+                segs.push(Seg::new(" ".repeat(fill), Style::default()));
+            }
+            rows.push(PRow::Text(segs));
         }
     }
     rows
 }
 
-fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, items: &[PItem], avatar: Option<Key>, scroll: &mut usize) {
-    let rows = expand_profile(app, items, avatar, area.width as usize);
+/// Thumbnails in a grid of up to five columns, each with its description below, centered.
+/// Requests the images, so they load only while the tab is open.
+fn image_rows(app: &mut App, profile: &fchat::Profile, width: usize) -> Vec<PRow> {
+    let mut rows = Vec::new();
+    if profile.images.is_empty() {
+        rows.push(PRow::Text(vec![Seg::new("(no images)", dim())]));
+        return rows;
+    }
+    if !app.images.enabled() {
+        rows.push(PRow::Text(vec![Seg::new("Images are off; click a line to copy the link to the full image", dim())]));
+        rows.push(PRow::Text(Vec::new()));
+        for (number, (file, description)) in profile.images.iter().enumerate() {
+            let text = if description.is_empty() { format!("{}. {file}", number + 1) } else { format!("{}. {description}", number + 1) };
+            let line = vec![Seg::linked(text, crate::style::url_style(), full_image_url(file))];
+            rows.extend(wrap(&line, width).into_iter().map(PRow::Text));
+        }
+        return rows;
+    }
+    rows.push(PRow::Text(vec![Seg::new("Click an image to copy the link to the full image", dim())]));
+    rows.push(PRow::Text(Vec::new()));
+    let (font_width, font_height) = app.images.font();
+    let estimate = (u32::from(images::THUMB_ROWS) * u32::from(font_height)).div_ceil(u32::from(font_width.max(1))) as usize;
+    let thumbs: Vec<(Key, String, String)> = profile.images.iter().map(|(file, description)| (Key::new(Kind::Thumb, file), full_image_url(file), description.clone())).collect();
+    let widths: Vec<Option<usize>> = thumbs
+        .iter()
+        .map(|(key, _, _)| {
+            app.images.request(key);
+            app.images.size_cells(key).map(|size| size.0 as usize)
+        })
+        .collect();
+    let widest = widths.iter().map(|width| width.unwrap_or(estimate)).max().unwrap_or(estimate).max(1);
+    let per_row = ((width + PROFILE_GUTTER) / (widest + PROFILE_GUTTER)).clamp(1, images::THUMB_COLUMNS);
+    let cell = (width.saturating_sub(PROFILE_GUTTER * (per_row - 1)) / per_row).max(1);
+    for (band, (thumbs, widths)) in thumbs.chunks(per_row).zip(widths.chunks(per_row)).enumerate() {
+        if band > 0 {
+            rows.push(PRow::Text(Vec::new()));
+        }
+        let mut items = Vec::new();
+        let mut slots = Vec::new();
+        for (index, ((key, link, _), image_width)) in thumbs.iter().zip(widths).enumerate() {
+            let start = index * (cell + PROFILE_GUTTER);
+            let slot = match image_width {
+                Some(image_width) => (start + cell.saturating_sub(*image_width) / 2, (*image_width).min(cell)),
+                None => (start, cell),
+            };
+            items.push((key.clone(), Some(link.clone())));
+            slots.push((slot.0 as u16, slot.1 as u16));
+        }
+        push_strip(&mut rows, items, images::THUMB_ROWS, slots);
+        let texts: Vec<Vec<String>> = thumbs
+            .iter()
+            .map(|(_, _, description)| {
+                let mut pieces = if description.is_empty() { Vec::new() } else { chunks(description, cell) };
+                if pieces.len() > IMAGE_TEXT_ROWS {
+                    pieces.truncate(IMAGE_TEXT_ROWS);
+                    let last = pieces.last_mut().unwrap();
+                    let mut cut = fit(last, cell.saturating_sub(3));
+                    cut.push_str("...");
+                    *last = cut;
+                }
+                pieces
+            })
+            .collect();
+        let height = texts.iter().map(Vec::len).max().unwrap_or(0);
+        for line in 0..height {
+            let mut segs = Vec::new();
+            for (index, pieces) in texts.iter().enumerate() {
+                if index > 0 {
+                    segs.push(Seg::new(" ".repeat(PROFILE_GUTTER), Style::default()));
+                }
+                let text = pieces.get(line).cloned().unwrap_or_default();
+                let free = cell.saturating_sub(text_width(&text));
+                segs.push(Seg::new(" ".repeat(free / 2), Style::default()));
+                segs.push(Seg::new(text, dim()));
+                segs.push(Seg::new(" ".repeat(free - free / 2), Style::default()));
+            }
+            rows.push(PRow::Text(segs));
+        }
+    }
+    rows
+}
+
+/// Draws rows with their links and image strips, scrolled by `scroll`.
+fn draw_rows(frame: &mut Frame, app: &mut App, area: Rect, rows: &[PRow], scroll: &mut usize) {
     let height = area.height as usize;
     *scroll = (*scroll).min(rows.len().saturating_sub(height));
     let mut shown = Vec::new();
-    let mut strips: Vec<ProfileStrip> = Vec::new();
+    let mut strips: Vec<PendingStrip> = Vec::new();
     for (index, row) in rows.iter().enumerate().skip(*scroll).take(height) {
         let y = area.y + (index - *scroll) as u16;
         match row {
@@ -1198,19 +1290,93 @@ fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, items: &[PItem], a
                 }
                 shown.push(spans(segs));
             }
-            PRow::Strip(items, strip_rows) => {
+            PRow::Strip(items, strip_rows, slots) => {
                 let complete = index + *strip_rows as usize <= *scroll + height;
-                strips.push((y, items.clone(), *strip_rows, complete));
+                strips.push((y, items.clone(), *strip_rows, slots.clone(), complete));
                 shown.push(Line::default());
             }
             PRow::Cont => shown.push(Line::default()),
         }
     }
     frame.render_widget(Paragraph::new(shown), area);
-    for (y, items, strip_rows, complete) in strips {
-        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false, gap: 1, slots: Vec::new() };
+    for (y, items, strip_rows, slots, complete) in strips {
+        let target = StripTarget { x: area.x, y, width: area.width, rows: strip_rows, draw: complete, chat: false, gap: 1, slots };
         draw_strip(frame, app, &items, &target);
     }
+}
+
+type StripItems = Vec<(Key, Option<String>)>;
+/// A strip seen while laying out rows: y, images, rows, places, completely visible.
+type PendingStrip = (u16, StripItems, u16, Vec<(u16, u16)>, bool);
+
+/// The profile page: header with avatar and the main facts, tabs below.
+fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, screen: &mut ProfileScreen) {
+    let outer = centered(area, (area.width * 9 / 10).max(40), (area.height * 9 / 10).max(12));
+    let inner = modal(frame, outer, &format!("Profile: {}", screen.character));
+    let body = rect(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height.saturating_sub(1));
+
+    let avatar = app.images.enabled().then(|| Key::new(Kind::Avatar, &screen.character));
+    let avatar_width = match &avatar {
+        Some(key) => {
+            app.images.request(key);
+            let (font_width, font_height) = app.images.font();
+            let estimate = (u32::from(images::AVATAR_ROWS) * u32::from(font_height)).div_ceil(u32::from(font_width.max(1))) as u16;
+            app.images.size_cells(key).map_or(estimate, |size| size.0)
+        }
+        None => 0,
+    };
+    let info_x = if avatar_width > 0 { body.x + avatar_width + 2 } else { body.x };
+    let info_width = body.width.saturating_sub(info_x - body.x);
+    let header: Vec<Vec<Seg>> = profile_header(app, screen).iter().flat_map(|line| wrap(line, info_width as usize)).collect();
+    let header_rows = (header.len() as u16).max(if avatar.is_some() { images::AVATAR_ROWS } else { 0 }).min(body.height / 2);
+    if let Some(key) = &avatar {
+        let target = StripTarget { x: body.x, y: body.y, width: avatar_width.max(1), rows: images::AVATAR_ROWS, draw: header_rows >= images::AVATAR_ROWS, chat: false, gap: 0, slots: Vec::new() };
+        draw_strip(frame, app, &[(key.clone(), None)], &target);
+    }
+    let mut header_scroll = 0;
+    let header_lines: Vec<PRow> = header.into_iter().map(PRow::Text).collect();
+    draw_rows(frame, app, rect(info_x, body.y, info_width, header_rows), &header_lines, &mut header_scroll);
+
+    let tabs_y = body.y + header_rows + 1;
+    let count = match &screen.result {
+        Some(Ok(profile)) => format!("Images ({})", profile.images.len()),
+        _ => "Images".to_string(),
+    };
+    let mut x = body.x;
+    let mut tab_spans = Vec::new();
+    let mut underline = Vec::new();
+    screen.tab_hits.clear();
+    for (tab, label) in PROFILE_TABS.iter().zip(["Info", "Description", "Kinks", count.as_str()]) {
+        let text = format!(" {label} ");
+        let width = text_width(&text) as u16;
+        let active = *tab == screen.tab;
+        screen.tab_hits.push((rect(x, tabs_y, width, 1), *tab));
+        tab_spans.push(Span::styled(text, if active { color("focus").patch(bold()) } else { dim() }));
+        tab_spans.push(Span::raw(" "));
+        underline.push(Span::styled((if active { "\u{2501}" } else { "\u{2500}" }).repeat(width as usize), if active { color("focus") } else { dim() }));
+        underline.push(Span::styled("\u{2500}", dim()));
+        x += width + 1;
+    }
+    let rest = body.width.saturating_sub(x - body.x) as usize;
+    underline.push(Span::styled("\u{2500}".repeat(rest), dim()));
+    frame.render_widget(Paragraph::new(vec![Line::from(tab_spans), Line::from(underline)]), rect(body.x, tabs_y, body.width, 2));
+
+    let content = rect(body.x, tabs_y + 3, body.width, body.height.saturating_sub(header_rows + 4));
+    let width = content.width as usize;
+    let rows = match &screen.result {
+        Some(Ok(profile)) => {
+            let profile = profile.clone();
+            match screen.tab {
+                ProfileTab::Info => info_rows(app, &profile, width),
+                ProfileTab::Description => description_rows(app, &profile, width),
+                ProfileTab::Kinks => kink_rows(&profile, width),
+                ProfileTab::Images => image_rows(app, &profile, width),
+            }
+        }
+        _ => Vec::new(),
+    };
+    draw_rows(frame, app, content, &rows, screen.scroll_mut());
+    footer(frame, outer, "o: copy profile link, left/right: tabs, up/down: scroll, esc: close, click names and links");
 }
 
 #[cfg(test)]
@@ -1316,5 +1482,38 @@ mod tests {
         assert!(settings.confirm_reset);
         draw(&mut terminal, &mut settings);
         assert!(matches!(click(&mut settings, Hit::Reset), crate::screens::Action::ResetTab(Tab::General)));
+    }
+
+    #[test]
+    fn profile_thumbnails_sit_in_their_own_columns() {
+        let mut app = app_with_input("");
+        app.images.enable_for_test();
+        let files = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png", "g.png"];
+        for (index, file) in files.iter().enumerate() {
+            if index != 3 {
+                app.images.insert_for_test(Key::new(Kind::Thumb, file), 60 + 20 * index as u32, 100);
+            }
+        }
+        let images = files.iter().map(|file| (file.to_string(), "A description that is far too long for one column of the grid".to_string())).collect();
+        let profile = fchat::Profile { name: "X".into(), images, ..Default::default() };
+        let mut screen = ProfileScreen::new("X");
+        screen.result = Some(Ok(profile));
+        screen.tab = ProfileTab::Images;
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 50)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_profile(frame, &mut app, frame.area(), &mut screen);
+            })
+            .unwrap();
+        let thumbs: Vec<Rect> = app.regions.modal_links.iter().filter(|(_, link)| link.ends_with(".png")).map(|(area, _)| *area).collect();
+        assert_eq!(thumbs.len(), files.len());
+        for (index, first) in thumbs.iter().enumerate() {
+            for second in &thumbs[index + 1..] {
+                assert!(!first.intersects(*second), "{first:?} overlaps {second:?}");
+            }
+        }
+        let text: Vec<String> = (0..50).map(|y| (0..110).map(|x| terminal.backend().buffer().cell((x, y)).unwrap().symbol().to_string()).collect()).collect();
+        assert!(text.iter().any(|line| line.contains("...")), "long descriptions are cut after two lines");
+        assert!(!text.iter().any(|line| line.contains("colum n")), "lines break between words");
     }
 }

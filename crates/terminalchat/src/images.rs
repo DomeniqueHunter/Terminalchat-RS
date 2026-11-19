@@ -319,6 +319,19 @@ impl ImageStore {
         }
     }
 
+    #[cfg(test)]
+    pub fn enable_for_test(&mut self) {
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Sixel);
+        self.picker = Some(picker);
+    }
+
+    #[cfg(test)]
+    pub fn insert_for_test(&mut self, key: Key, width: u32, height: u32) {
+        self.slots.insert(key.clone(), Slot::Loading);
+        self.on_loaded(key, Some(vec![(RgbaImage::from_pixel(width, height, image::Rgba([200, 0, 0, 255])), Duration::from_millis(100))]));
+    }
+
     pub fn enabled(&self) -> bool {
         self.picker.is_some()
     }
