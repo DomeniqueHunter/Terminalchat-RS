@@ -4,6 +4,8 @@
 #   ./build.sh arm64      cross build for 64 bit ARM Linux (Raspberry Pi 5)
 #   ./build.sh all        both
 #   ./build.sh clean      remove target/ and everything in build/
+#   --restart             after a native build: restart the client with the new binary
+#                         (inside its tmux session if one runs, otherwise in this terminal)
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
@@ -44,17 +46,68 @@ build_arm64() {
     echo "-> build/${BIN}-aarch64"
 }
 
+# Ends the running client cleanly (SIGTERM, it saves its files) and starts the new binary in the
+# same tmux pane, so an attached window shows the new version at once.
+restart_client() {
+    local session="terminalchat"
+    tmux_cmd() {
+        env -u TMUX tmux -L "${session}" -f "tmux.conf" "$@"
+    }
+    if ! command -v tmux >/dev/null 2>&1 || ! tmux_cmd has-session -t "${session}" 2>/dev/null; then
+        echo "starting terminalchat"
+        exec ./terminalchat
+    fi
+    local pid
+    pid="$(tmux_cmd display-message -p -t "${session}" '#{pane_pid}')"
+    tmux_cmd set-option -p -t "${session}" remain-on-exit on
+    kill -TERM "${pid}" 2>/dev/null || true
+    pkill -TERM -P "${pid}" 2>/dev/null || true
+    for _ in $(seq 50); do
+        kill -0 "${pid}" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "${pid}" 2>/dev/null; then
+        echo "terminalchat did not stop within 5 s, killing it" >&2
+        tmux_cmd respawn-pane -k -t "${session}"
+    else
+        tmux_cmd respawn-pane -t "${session}"
+    fi
+    tmux_cmd set-option -p -t "${session}" remain-on-exit off
+    echo "terminalchat restarted in its tmux session"
+}
+
 clean() {
     cargo clean
     find build -mindepth 1 ! -name '.keep' -delete 2>/dev/null || true
     echo "cleaned target/ and build/"
 }
 
+usage() {
+    echo "Usage: $0 [native|arm64|all|clean] [--restart]" >&2
+    exit 1
+}
+
+TASK="native"
+RESTART=false
+for arg in "$@"; do
+    case "${arg}" in
+        native|arm64|all|clean) TASK="${arg}" ;;
+        --restart) RESTART=true ;;
+        *) usage ;;
+    esac
+done
+
 mkdir -p build
-case "${1:-native}" in
+case "${TASK}" in
     native) build_native ;;
     arm64)  build_arm64 ;;
     all)    build_native; build_arm64 ;;
     clean)  clean ;;
-    *)      echo "Usage: $0 [native|arm64|all|clean]" >&2; exit 1 ;;
 esac
+
+if [[ "${RESTART}" == true ]]; then
+    case "${TASK}" in
+        native|all) restart_client ;;
+        *) echo "--restart works only with a native build" >&2 ;;
+    esac
+fi

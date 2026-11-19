@@ -127,6 +127,11 @@ pub struct AdSettings {
 }
 
 impl AdSettings {
+    /// Ads shown in channels without an own choice.
+    pub fn set_default(&mut self, default: bool) {
+        self.default = default;
+    }
+
     pub fn load(path: PathBuf, default: bool) -> AdSettings {
         let channels = match read_json(&path) {
             Some(Value::Object(map)) => map

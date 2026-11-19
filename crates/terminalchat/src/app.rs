@@ -1,6 +1,7 @@
 //! The application state and the client logic: connection, server events, chats.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use fchat::opcode;
@@ -49,6 +50,8 @@ pub enum AppEvent {
     Image(Key, Option<Frames>),
     /// Whether a tmux client is attached (animations pause while detached).
     Attached(bool, u16, u16),
+    /// SIGTERM or SIGHUP: quit cleanly, e.g. for `./build.sh --restart`.
+    Quit,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -127,6 +130,8 @@ pub struct Regions {
 
 pub struct App {
     pub config: Config,
+    /// The data folder of this run; a changed data_dir counts after a restart.
+    pub data_dir: PathBuf,
     pub tx: UnboundedSender<AppEvent>,
     pub should_quit: bool,
     pub osc_queue: Vec<String>,
@@ -255,6 +260,7 @@ impl App {
             last_gender_save: Instant::now(),
             ticks: 0,
             minimize_requested: false,
+            data_dir: data_dir.clone(),
             config,
         };
         app.store.get_or_create(CONSOLE, CONSOLE_KIND, Some("Console"));
@@ -483,7 +489,7 @@ impl App {
             return;
         }
         self.character = name.to_string();
-        let chats_dir = self.config.data_dir().join("chats");
+        let chats_dir = self.data_dir.join("chats");
         self.store = ChatStore::new(name, &chats_dir);
         let base = self.store.base.clone();
         self.pins = Pins::load(base.join("pins.json"));
@@ -1562,4 +1568,69 @@ fn default_variables() -> HashMap<String, Value> {
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
         .collect()
+}
+
+
+// ------------------------------------------------------------------ settings page
+
+impl App {
+    /// Checks and saves one general setting and applies what takes effect at once. The text
+    /// tells when the change counts.
+    pub fn change_setting(&mut self, key: &str, text: &str) -> Result<String, String> {
+        let before = self.config.clone();
+        crate::settings::apply(&mut self.config, key, text)?;
+        if let Err(error) = self.config.save() {
+            self.config = before;
+            return Err(error.to_string());
+        }
+        match key {
+            "show_sidebar" => self.show_sidebar = self.config.show_sidebar,
+            "show_ads" => self.ads.set_default(self.config.show_ads),
+            "eicon_height" => self.images.set_eicon_rows(self.config.eicon_height),
+            "eicon_animate" => self.images.animate = self.config.eicon_animate,
+            "eicon_max_age_hours" => self.images.set_max_age(self.config.eicon_max_age_hours),
+            _ => {}
+        }
+        let effect = crate::settings::setting(key).map(|setting| setting.effect.note()).unwrap_or_default();
+        Ok(match key {
+            "data_dir" => format!("{key} saved, {effect}; existing data stays in {}", self.data_dir.display()),
+            _ if effect.is_empty() => format!("{key} saved"),
+            _ => format!("{key} saved, {effect}"),
+        })
+    }
+
+    pub fn reset_setting(&mut self, key: &str) -> Result<String, String> {
+        self.change_setting(key, &crate::settings::default_value(key)).map(|_| format!("{key} back to default"))
+    }
+
+    /// Checks, uses and saves one color.
+    pub fn change_color(&mut self, path: &str, spec: &str) -> Result<String, String> {
+        crate::colors::set(&mut self.config.colors, path, spec)?;
+        self.config.save().map_err(|error| error.to_string())?;
+        Ok(format!("{path} saved"))
+    }
+
+    /// Everything of one tab back to default, the reset button of the settings page.
+    pub fn reset_tab(&mut self, tab: crate::screens::Tab) -> Result<String, String> {
+        match tab {
+            crate::screens::Tab::General => {
+                for setting in crate::settings::SETTINGS.iter() {
+                    self.change_setting(setting.key, &crate::settings::default_value(setting.key))?;
+                }
+                Ok("General settings back to default (connection after /reconnect, eicons, cell_size and data_dir after restart)".into())
+            }
+            crate::screens::Tab::Colors => {
+                self.config.colors = None;
+                crate::colors::init(None);
+                self.config.save().map_err(|error| error.to_string())?;
+                Ok("All colors back to default".into())
+            }
+        }
+    }
+
+    pub fn reset_color(&mut self, path: &str) -> Result<String, String> {
+        crate::colors::reset(&mut self.config.colors, path);
+        self.config.save().map_err(|error| error.to_string())?;
+        Ok(format!("{path} back to default"))
+    }
 }

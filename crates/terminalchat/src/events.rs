@@ -28,6 +28,7 @@ fn paste(app: &mut App, text: &str) {
     match app.screens.last_mut() {
         Some(Screen::Picker(picker)) => picker.filter.push_str(&text.replace('\n', " ")),
         Some(Screen::Edit(edit)) => edit.insert(&text.replace('\n', " ")),
+        Some(Screen::Settings(settings)) => settings.paste(&text.replace('\n', " ")),
         Some(Screen::Login(login)) => match login.focus {
             0 => login.account.push_str(text.trim()),
             1 => login.password.push_str(text.trim()),
@@ -255,6 +256,33 @@ fn apply_action(app: &mut App, action: Action) {
                 app.apply_status(&status, text.trim());
             }
         }
+        Action::Setting(key, text) => {
+            let result = app.change_setting(&key, &text);
+            settings_done(app, result);
+        }
+        Action::ResetSetting(key) => {
+            let result = app.reset_setting(&key);
+            settings_done(app, result);
+        }
+        Action::Color(path, spec) => {
+            let result = app.change_color(&path, &spec);
+            settings_done(app, result);
+        }
+        Action::ResetColor(path) => {
+            let result = app.reset_color(&path);
+            settings_done(app, result);
+        }
+        Action::ResetTab(tab) => {
+            let result = app.reset_tab(tab);
+            settings_done(app, result);
+        }
+    }
+}
+
+fn settings_done(app: &mut App, result: Result<String, String>) {
+    let App { screens, config, .. } = app;
+    if let Some(Screen::Settings(settings)) = screens.last_mut() {
+        settings.done(result, config);
     }
 }
 
@@ -306,6 +334,11 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) {
 }
 
 fn on_click(app: &mut App, column: u16, row: u16) {
+    if let Some(Screen::Settings(settings)) = app.screens.last_mut() {
+        let action = settings.click(column, row);
+        apply_action(app, action);
+        return;
+    }
     if !app.screens.is_empty() {
         let link = app.regions.modal_links.iter().find(|(rect, _)| contains(rect, column, row)).map(|(_, link)| link.clone());
         if let Some(link) = link {

@@ -14,7 +14,7 @@ use crate::commands::{command_usage, matching_commands, resolve_alias, COMMAND_I
 use crate::pager::RowKind;
 use crate::rows::{char_width, text_width, wrap};
 use crate::sanitize::html_unescape;
-use crate::screens::Screen;
+use crate::screens::{ColorEditor, ColorPart, Hit, Screen, SettingsEdit, SettingsScreen, Tab};
 use crate::store::{CHANNEL, CONSOLE, USER};
 use crate::style::{bold, color, dim, reversed, status_style, status_symbol};
 
@@ -775,11 +775,284 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             cursor = Some((inner.x + 1 + cursor_at.1 as u16, inner.y + 1 + cursor_at.0 as u16));
             footer(frame, outer, "enter: save, ctrl+enter / ctrl+j: new line, esc: cancel, ctrl+u: clear");
         }
+        Screen::Settings(settings) => cursor = draw_settings(frame, area, settings),
     }
     if let Some((x, y)) = cursor {
         frame.set_cursor_position((x, y));
     }
     app.screens.insert(index, screen);
+}
+
+// ------------------------------------------------------------------ settings
+
+const SETTING_LABEL: usize = 22;
+const SETTING_VALUE: usize = 26;
+const COLOR_LABEL: usize = 14;
+const COLOR_VALUE: usize = 30;
+
+/// Cuts text to a width in cells.
+fn fit(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = char_width(c);
+        if used + w > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out
+}
+
+fn pad(text: &str, width: usize) -> String {
+    let text = fit(text, width);
+    let fill = width.saturating_sub(text_width(&text));
+    format!("{text}{}", " ".repeat(fill))
+}
+
+/// Draws the settings page, returns where the cursor goes. Fills the click areas of the screen.
+fn draw_settings(frame: &mut Frame, area: Rect, settings: &mut SettingsScreen) -> Option<(u16, u16)> {
+    let outer = centered(area, area.width.saturating_sub(4).clamp(40, 100), area.height.saturating_sub(2).max(14));
+    let inner = modal(frame, outer, "Settings");
+    crate::colors::fill(frame, outer, "settings_box");
+    let body = rect(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height.saturating_sub(1));
+    let selected_style = color("settings_selected");
+    let group_style = color("settings_group");
+    settings.hits.clear();
+
+    let mut x = body.x;
+    let mut tabs = Vec::new();
+    for (label, tab) in [("General", Tab::General), ("Colors", Tab::Colors)] {
+        let text = format!(" {label} ");
+        let width = text_width(&text) as u16;
+        settings.hits.push((rect(x, body.y, width, 1), Hit::Tab(tab)));
+        tabs.push(Span::styled(text, if settings.tab == tab { selected_style } else { dim() }));
+        tabs.push(Span::raw("  "));
+        x += width + 2;
+    }
+    frame.render_widget(Paragraph::new(Line::from(tabs)), rect(body.x, body.y, body.width, 1));
+    let (button, button_style) = if settings.confirm_reset { (" Reset? click again or y ", color("warning")) } else { (" Reset ", dim()) };
+    let button = format!("[{button}]");
+    let width = text_width(&button) as u16;
+    if body.width > x - body.x + width {
+        let place = rect(body.x + body.width - width, body.y, width, 1);
+        settings.hits.push((place, Hit::Reset));
+        frame.render_widget(Paragraph::new(Span::styled(button, button_style)), place);
+    }
+
+    let editor_rows: u16 = match &settings.edit {
+        Some(SettingsEdit::Color(editor)) => editor.part_list().len() as u16 + 3,
+        _ => 0,
+    };
+    let list = rect(body.x, body.y + 2, body.width, body.height.saturating_sub(3 + editor_rows));
+    let mut edit_at: Option<(u16, usize)> = None;
+    let mut rows: Vec<(Option<usize>, Line)> = Vec::new();
+    let selected = settings.current();
+    let mut group = "";
+    match settings.tab {
+        Tab::General => {
+            for (index, setting) in crate::settings::SETTINGS.iter().enumerate() {
+                if setting.group != group {
+                    group = setting.group;
+                    rows.push((None, Line::from(Span::styled(group.to_string(), group_style))));
+                }
+                let value = settings.values.get(index).cloned().unwrap_or_default();
+                let (shown, shown_style) = match setting.field {
+                    crate::settings::Field::Bool => (if value == "true" { "[x]" } else { "[ ]" }.to_string(), Style::default()),
+                    _ if value.is_empty() => (if setting.key == "data_dir" { "(default)" } else { "(none)" }.to_string(), dim()),
+                    _ => (value, Style::default()),
+                };
+                let marker = if index == selected { "> " } else { "  " };
+                let label_style = if index == selected { selected_style } else { Style::default() };
+                let mut spans = vec![Span::raw(marker), Span::styled(pad(setting.key, SETTING_LABEL), label_style), Span::raw(" ")];
+                match (&settings.edit, index == selected) {
+                    (Some(SettingsEdit::Text(input)), true) => {
+                        spans.push(Span::styled(pad(input.text(), SETTING_VALUE), color("focus")));
+                        let before: String = input.text().chars().take(input.cursor()).collect();
+                        edit_at = Some((SETTING_LABEL as u16 + 3 + text_width(&before) as u16, index));
+                    }
+                    _ => spans.push(Span::styled(pad(&shown, SETTING_VALUE), shown_style)),
+                }
+                if !setting.effect.note().is_empty() {
+                    spans.push(Span::styled(format!(" {}", setting.effect.note()), dim()));
+                }
+                rows.push((Some(index), Line::from(spans)));
+            }
+        }
+        Tab::Colors => {
+            let palette = crate::colors::palette();
+            for (index, entry) in crate::colors::entries().iter().enumerate() {
+                if entry.group != group {
+                    group = entry.group;
+                    rows.push((None, Line::from(Span::styled(group.to_string(), group_style))));
+                }
+                let name = entry.path.rsplit('.').next().unwrap_or(&entry.path).to_string();
+                let marker = if index == selected { "> " } else { "  " };
+                let label_style = if index == selected { selected_style } else { Style::default() };
+                let spec = palette.spec(&entry.path);
+                let shown = if spec.is_empty() && entry.kind == crate::colors::Kind::Background { "(terminal)" } else { spec };
+                let preview = match entry.kind {
+                    crate::colors::Kind::Background => match palette.background(&entry.path) {
+                        Some(background) => Span::styled("          ", Style::default().bg(background)),
+                        None => Span::styled("transparent", dim()),
+                    },
+                    crate::colors::Kind::Style => Span::styled(sample(&entry.path, &name), palette.style(&entry.path)),
+                };
+                let spans = vec![
+                    Span::raw(marker),
+                    Span::styled(pad(&name, COLOR_LABEL), label_style),
+                    Span::raw(" "),
+                    Span::raw(pad(shown, COLOR_VALUE)),
+                    Span::raw(" "),
+                    preview,
+                ];
+                rows.push((Some(index), Line::from(spans)));
+            }
+        }
+    }
+    let position = rows.iter().position(|(index, _)| *index == Some(selected)).unwrap_or(0);
+    let capacity = list.height as usize;
+    let mut start = (position + 1).saturating_sub(capacity);
+    if start > 0 && rows.get(start.saturating_sub(1)).is_some_and(|(index, _)| index.is_none()) && position + 1 < start + capacity {
+        start -= 1;
+    }
+    for (offset, (index, _)) in rows.iter().skip(start).take(capacity).enumerate() {
+        if let Some(index) = index {
+            settings.hits.push((rect(list.x, list.y + offset as u16, list.width, 1), Hit::Row(*index)));
+        }
+    }
+    let shown: Vec<Line> = rows.iter().skip(start).take(capacity).map(|(_, line)| line.clone()).collect();
+    frame.render_widget(Paragraph::new(shown), list);
+    let mut cursor = None;
+    if let Some((x, index)) = edit_at {
+        let row = rows.iter().position(|(entry, _)| *entry == Some(index)).unwrap_or(0);
+        if row >= start && row < start + capacity {
+            let y = list.y + (row - start) as u16;
+            let field = rect(list.x + SETTING_LABEL as u16 + 3, y, (SETTING_VALUE as u16).min(list.width.saturating_sub(SETTING_LABEL as u16 + 3)), 1);
+            crate::colors::fill(frame, field, "settings_field");
+            cursor = Some((list.x + x, y));
+        }
+    }
+
+    if let Some(SettingsEdit::Color(editor)) = &settings.edit {
+        let top = list.y + list.height + 1;
+        let area = rect(body.x, top, body.width, editor_rows);
+        crate::colors::fill(frame, area, "settings_field");
+        cursor = draw_color_editor(frame, area, editor, &mut settings.hits);
+    }
+    if let Some((message, error)) = &settings.message {
+        let style = if *error { color("error") } else { color("information") };
+        frame.render_widget(Paragraph::new(Span::styled(fit(message, body.width as usize), style)), rect(body.x, body.y + body.height - 1, body.width, 1));
+    }
+    let hint = match &settings.edit {
+        None => "click or up/down: choose, tab: General/Colors, enter: change, r: default, R: reset tab, esc: close",
+        Some(SettingsEdit::Text(_)) => "enter: save, esc: cancel, ctrl+u: clear",
+        Some(SettingsEdit::Color(_)) => "tab/up/down: part, left/right or click: choose, space: toggle, enter: save, esc: cancel",
+    };
+    footer(frame, outer, hint);
+    cursor
+}
+
+/// Sample text for a style: names stand for themselves, the rest shows a word.
+fn sample(path: &str, name: &str) -> String {
+    if path.contains('.') {
+        return name.to_string();
+    }
+    match path {
+        "url" => "https://f-list.net".into(),
+        "footer" | "footer_key" => " ctrl+o ".into(),
+        "eicon" | "icon" | "user" | "sender" => "Character".into(),
+        "channel_link" => "#Frontpage".into(),
+        _ => "Sample text".into(),
+    }
+}
+
+/// The color editor below the list: text, color pickers, attributes and a preview.
+fn draw_color_editor(frame: &mut Frame, area: Rect, editor: &ColorEditor, hits: &mut Vec<(Rect, Hit)>) -> Option<(u16, u16)> {
+    let label_width = 12u16;
+    let label = |text: &str, part: ColorPart| {
+        let style = if editor.part == part { color("settings_selected") } else { dim() };
+        Span::styled(pad(text, label_width as usize - 1), style)
+    };
+    let mut lines = vec![Line::from(Span::styled(format!("Edit {}", editor.path), color("settings_group")))];
+    let mut cursor = None;
+    for (row, part) in editor.part_list().iter().enumerate() {
+        let y = area.y + 1 + row as u16;
+        hits.push((rect(area.x, y, label_width, 1), Hit::Part(*part)));
+        let mut spans = Vec::new();
+        match part {
+            ColorPart::Text => {
+                hits.push((rect(area.x, y, area.width, 1), Hit::Part(*part)));
+                spans.push(label("Text", *part));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(editor.input.text().to_string(), color("focus")));
+                if editor.part == ColorPart::Text {
+                    let before: String = editor.input.text().chars().take(editor.input.cursor()).collect();
+                    cursor = Some((area.x + label_width + text_width(&before) as u16, y));
+                }
+            }
+            ColorPart::Color | ColorPart::Background => {
+                let (name, chosen) = if *part == ColorPart::Color {
+                    (if editor.kind == crate::colors::Kind::Background { "Background" } else { "Color" }, editor.color)
+                } else {
+                    ("Background", editor.background)
+                };
+                spans.push(label(name, *part));
+                spans.push(Span::raw(" "));
+                let mut x = area.x + label_width;
+                let none = if chosen == 0 { "<none>" } else { " none " };
+                spans.push(Span::styled(none, if chosen == 0 { color("settings_selected") } else { dim() }));
+                hits.push((rect(x, y, 6, 1), Hit::Swatch(*part, 0)));
+                x += 6;
+                for (index, preset) in crate::colors::PRESETS.iter().enumerate() {
+                    let background = crate::colors::parse_hex(preset).unwrap_or_default();
+                    let mark = if index + 1 == chosen { "<>" } else { "  " };
+                    let ink = if is_light(preset) { ratatui::style::Color::Black } else { ratatui::style::Color::White };
+                    spans.push(Span::styled(mark, Style::default().bg(background).fg(ink)));
+                    hits.push((rect(x, y, 2, 1), Hit::Swatch(*part, index + 1)));
+                    x += 2;
+                }
+            }
+            ColorPart::Modifiers => {
+                spans.push(label("Style", *part));
+                spans.push(Span::raw(" "));
+                let mut x = area.x + label_width;
+                for (index, modifier) in crate::colors::MODIFIERS.iter().enumerate() {
+                    let check = if editor.parts.has(modifier) { "[x]" } else { "[ ]" };
+                    let style = if editor.part == ColorPart::Modifiers && index == editor.modifier { color("settings_selected") } else { Style::default() };
+                    let text = format!("{check} {modifier}");
+                    let width = text_width(&text) as u16;
+                    hits.push((rect(x, y, width, 1), Hit::Modifier(index)));
+                    spans.push(Span::styled(text, style));
+                    spans.push(Span::raw("  "));
+                    x += width + 2;
+                }
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    let preview = match editor.kind {
+        crate::colors::Kind::Background => match crate::colors::parse_hex(editor.input.text().trim()) {
+            Some(background) => Span::styled("                    ", Style::default().bg(background)),
+            None => Span::styled(if editor.input.text().trim().is_empty() { "transparent" } else { "?" }, dim()),
+        },
+        crate::colors::Kind::Style => match crate::colors::parse_style(editor.input.text()) {
+            Some(style) => Span::styled(sample(&editor.path, editor.path.rsplit('.').next().unwrap_or("")), style),
+            None => Span::styled("not readable yet", color("error")),
+        },
+    };
+    lines.push(Line::from(vec![Span::styled(pad("Preview", label_width as usize - 1), dim()), Span::raw(" "), preview]));
+    frame.render_widget(Paragraph::new(lines), area);
+    cursor
+}
+
+/// Light colors get dark marks in the picker.
+fn is_light(hex: &str) -> bool {
+    match crate::colors::parse_hex(hex) {
+        Some(ratatui::style::Color::Rgb(red, green, blue)) => (red as u32 * 299 + green as u32 * 587 + blue as u32 * 114) / 1000 > 140,
+        _ => false,
+    }
 }
 
 // ------------------------------------------------------------------ profile text
@@ -977,5 +1250,71 @@ mod tests {
         let lines = text_of(&hint_lines(&app_with_input("/")));
         assert_eq!(lines.len(), MAX_HINTS);
         assert!(lines[MAX_HINTS - 1].contains("more, keep typing"));
+    }
+
+    #[test]
+    fn the_settings_page_draws_in_small_and_large_terminals() {
+        for (width, height) in [(40, 14), (120, 40)] {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            let mut screen = Screen::Settings(SettingsScreen::new(&Config::default()));
+            for _ in 0..2 {
+                let draw = |terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>, screen: &mut Screen| {
+                    let Screen::Settings(settings) = screen else { unreachable!() };
+                    terminal.draw(|frame| {
+                        draw_settings(frame, frame.area(), settings);
+                    })
+                    .unwrap();
+                };
+                draw(&mut terminal, &mut screen);
+                screen.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Enter));
+                draw(&mut terminal, &mut screen);
+                screen.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Esc));
+                screen.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::End));
+                screen.on_key(ratatui::crossterm::event::KeyEvent::from(ratatui::crossterm::event::KeyCode::Tab));
+            }
+            let text: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+            assert!(text.contains("Settings"));
+        }
+    }
+
+    #[test]
+    fn the_settings_page_reacts_to_clicks() {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 34)).unwrap();
+        let mut settings = SettingsScreen::new(&Config::default());
+        let draw = |terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>, settings: &mut SettingsScreen| {
+            terminal.draw(|frame| {
+                draw_settings(frame, frame.area(), settings);
+            })
+            .unwrap();
+        };
+        let click = |settings: &mut SettingsScreen, hit: Hit| {
+            let (area, _) = *settings.hits.iter().find(|(_, found)| *found == hit).unwrap_or_else(|| panic!("{hit:?} not drawn"));
+            settings.click(area.x, area.y)
+        };
+        draw(&mut terminal, &mut settings);
+        click(&mut settings, Hit::Tab(Tab::Colors));
+        assert_eq!(settings.tab, Tab::Colors);
+        draw(&mut terminal, &mut settings);
+        let url = crate::colors::entries().iter().position(|entry| entry.path == "url").unwrap();
+        click(&mut settings, Hit::Row(url));
+        assert_eq!(settings.current(), url);
+        assert!(settings.edit.is_none(), "the first click only chooses");
+        click(&mut settings, Hit::Row(url));
+        draw(&mut terminal, &mut settings);
+        click(&mut settings, Hit::Swatch(ColorPart::Color, 1));
+        click(&mut settings, Hit::Modifier(0));
+        let Some(SettingsEdit::Color(editor)) = &settings.edit else { panic!("no color editor") };
+        assert_eq!(editor.input.text(), "bold underline #000000");
+        click(&mut settings, Hit::Tab(Tab::General));
+        assert!(settings.edit.is_none());
+        draw(&mut terminal, &mut settings);
+        let sidebar = crate::settings::SETTINGS.iter().position(|setting| setting.key == "show_sidebar").unwrap();
+        click(&mut settings, Hit::Row(sidebar));
+        let action = click(&mut settings, Hit::Row(sidebar));
+        assert!(matches!(action, crate::screens::Action::Setting(key, value) if key == "show_sidebar" && value == "true"));
+        click(&mut settings, Hit::Reset);
+        assert!(settings.confirm_reset);
+        draw(&mut terminal, &mut settings);
+        assert!(matches!(click(&mut settings, Hit::Reset), crate::screens::Action::ResetTab(Tab::General)));
     }
 }

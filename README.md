@@ -34,7 +34,10 @@ cargo test
 ./build.sh          # native
 ./build.sh clean    # remove target/ and build/*
 ./build.sh arm64    # cross build, needs aarch64-linux-gnu-gcc; or run ./build.sh on the Pi itself
+./build.sh --restart  # native build, then restart the client with the new binary
 ```
+
+`--restart` ends a running client cleanly (SIGTERM, it saves its files like `/quit`) and starts the new binary in the same tmux pane, so the attached window shows the new version; without a running session it starts `./terminalchat` in the current terminal. Nothing restarts when the build fails.
 
 ## Locations
 
@@ -64,6 +67,17 @@ Without a complete `config.json` a login screen appears. `/help` lists commands,
 - Cache: `~/.cache/terminalchat/{eicons,avatars,thumbs}` (same as the Python version), refreshed after `eicon_max_age_hours`.
 
 
+## Settings
+
+`/settings` opens the settings page with two tabs (switch with `tab`):
+
+- **General**: every entry of `config.json` except account, password and character (those go through the login and `/char`). Switches and choices change with `enter` or `space`, other values are edited in the row. Entries that count only later say so: connection after `/reconnect`, `default_channels` at the next login, `eicons`, `cell_size` and `data_dir` after a restart. A changed `data_dir` does not move existing data.
+- **Colors**: all entries of the block `colors` with a preview. `enter` opens the editor: the value as text, a color picker for color and background (`left`/`right`, `none` for no color), check boxes for bold, dim, italic, underline, strike and reverse (`space`), and a preview. Text and picker follow each other.
+
+The mouse works too: a click on a tab switches, a click on a row chooses it and a second click changes it; in the color editor a click picks a swatch, toggles a check box or focuses a part.
+
+Every accepted change is used at once and saved to `config.json` right away; a value that cannot be read is refused with the reason. `r` sets an entry back to its default. The `[Reset]` button at the top right (or `R`) sets everything of the current tab back to default after a confirmation (`y` or a second click): on *General* all general settings, on *Colors* all colors. Colors equal to the default are not stored.
+
 ## Colors
 
 All colors can be changed in the block `colors` of `config.json`. Only the entries that differ from the defaults are needed; the Python version keeps the block when it saves the config. A style is written like in the Python version: `bold`, `dim`, `italic`, `underline`, `strike`, `reverse`, a color `#rrggbb` and a background `on #rrggbb`. Entries that cannot be read are reported at start and keep their default.
@@ -77,6 +91,8 @@ Backgrounds (`#rrggbb`, or `""` for the terminal's own background, e.g. to keep 
     "panel": "#242f38",
     "status_box": "#121212",
     "status_field": "#121212",
+    "settings_box": "#121212",
+    "settings_field": "#1e1e1e",
 
     "user": "bold #008080",
     "icon": "bold #008080",
@@ -97,6 +113,8 @@ Backgrounds (`#rrggbb`, or `""` for the terminal's own background, e.g. to keep 
     "ad": "#d7af5f",
     "footer": "on #1f2d4a",
     "footer_key": "bold #ffb000",
+    "settings_selected": "reverse",
+    "settings_group": "bold",
 
     "status": {"looking": "#55ff55", "online": "#008080", "idle": "#a8a8a8", "away": "#a8a8a8", "busy": "#ffaf00", "dnd": "#ff5555", "crown": "#ffff55"},
     "gender": {"male": "#6699ff", "female": "#ff6699", "transgender": "#ee8822", "herm": "#9b30ff", "male-herm": "#007fff", "cunt-boy": "#00cc66", "shemale": "#cc66ff", "none": "#ffffbb"},
@@ -104,7 +122,7 @@ Backgrounds (`#rrggbb`, or `""` for the terminal's own background, e.g. to keep 
 }
 ```
 
-`surface` is the input field, `panel` popups and toasts, `status_box` and `status_field` the status message box and its text field, `focus` the border of the focused panel, `ad` the input border in ad mode, `footer` the key bar. `NO_COLOR` turns all colors off but keeps the attributes.
+`surface` is the input field, `panel` popups and toasts, `status_box` and `status_field` the status message box and its text field, `settings_box`, `settings_field`, `settings_selected` and `settings_group` the settings page, its edit field and color editor, the chosen row and tab, and the group titles, `focus` the border of the focused panel, `ad` the input border in ad mode, `footer` the key bar. `NO_COLOR` turns all colors off but keeps the attributes.
 
 ## GitHub Actions
 

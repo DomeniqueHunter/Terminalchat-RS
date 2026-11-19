@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::app::{App, Severity};
 use crate::bbcode::{to_segs, Seg};
 use crate::sanitize::html_unescape;
-use crate::screens::{bbcode_items, emoji_items, text_lines, EditScreen, PickItem, PickerKind, PickerScreen, Screen};
+use crate::screens::{bbcode_items, emoji_items, text_lines, EditScreen, PickItem, PickerKind, PickerScreen, Screen, SettingsScreen};
 use crate::store::{CHANNEL, CONSOLE, USER};
 use crate::stores::{MAX_STATUS_MESSAGE, VALID_STATUSES};
 use crate::style::{bold, dim, status_style};
@@ -44,6 +44,7 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("pins", "", "show pinned chats"),
     ("ads", "[on|off]", "show or hide ads in the current channel"),
     ("gif", "[on|off]", "animate GIF eicons on or off"),
+    ("settings", "", "change settings and colors"),
     ("char", "[name]", "switch character"),
     ("reconnect", "", "reconnect to the chat server now"),
     ("logout", "", "log out and forget password"),
@@ -256,6 +257,7 @@ impl App {
             }
             "ads" => self.cmd_ads(args),
             "gif" => self.cmd_gif(args),
+            "settings" => self.screens.push(Screen::Settings(SettingsScreen::new(&self.config))),
             "char" => self.cmd_char(args),
             "reconnect" => {
                 if self.online {

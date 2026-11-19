@@ -323,6 +323,16 @@ impl ImageStore {
         self.picker.is_some()
     }
 
+    /// New eicon height: the loaded eicons are scaled for the old one and load again.
+    pub fn set_eicon_rows(&mut self, rows: u32) {
+        self.eicon_rows = rows.clamp(1, 20) as u16;
+        self.slots.retain(|key, _| key.kind != Kind::Eicon);
+    }
+
+    pub fn set_max_age(&mut self, hours: f64) {
+        self.max_age = Duration::from_secs_f64(hours.max(0.0) * 3600.0);
+    }
+
     pub fn eicon_rows(&self) -> u16 {
         self.eicon_rows
     }

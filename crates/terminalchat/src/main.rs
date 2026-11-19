@@ -12,6 +12,7 @@ mod presence;
 mod rows;
 mod sanitize;
 mod screens;
+mod settings;
 mod store;
 mod stores;
 mod style;
@@ -51,6 +52,19 @@ fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) {
                 break;
             }
         }
+    });
+}
+
+/// SIGTERM and SIGHUP end the client like /quit, so the files are saved.
+fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    tokio::spawn(async move {
+        let (Ok(mut terminate), Ok(mut hangup)) = (signal(SignalKind::terminate()), signal(SignalKind::hangup())) else { return };
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = hangup.recv() => {}
+        }
+        let _ = tx.send(AppEvent::Quit);
     });
 }
 
@@ -94,6 +108,7 @@ fn handle(app: &mut App, event: AppEvent) {
             app.images.attached = attached;
             app.images.set_pane(left, top);
         }
+        AppEvent::Quit => app.should_quit = true,
     }
 }
 
@@ -114,6 +129,7 @@ async fn run(config: Config) -> std::io::Result<()> {
         default_hook(info);
     }));
     spawn_input(tx.clone());
+    spawn_signals(tx.clone());
     spawn_ticker(tx);
     app.start();
 

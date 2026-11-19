@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "fchat"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "terminalchat"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -2815,6 +2815,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
