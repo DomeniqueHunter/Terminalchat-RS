@@ -568,8 +568,10 @@ impl ImageStore {
             }
         }
         // The library erases the area before every Sixel image. Over a slow link that shows as
-        // flicker, so a new frame at the same place is drawn over the old one without erasing.
-        let same_place = loaded.last.is_some_and(|(last_area, last_index)| last_area == area && last_index != index);
+        // flicker, so once an image stands at a place, every later drawing there goes without
+        // erasing. That also keeps the drawing of an unchanged frame identical, so it is not sent
+        // again at all.
+        let same_place = loaded.last.is_some_and(|(last_area, _)| last_area == area);
         if same_place && !loaded.quiet.contains_key(&index) {
             let mut protocol = loaded.protocols[&index].clone();
             strip_erase(&mut protocol);
@@ -950,5 +952,35 @@ mod tests {
         strip_erase(&mut protocol);
         let Protocol::Sixel(sixel) = protocol else { unreachable!() };
         assert_eq!(sixel.data, format!("{TMUX_START}\x1b\x1bPq#0;2;100;0;0#0!8~\x1b\x1b\\\x1b\\"));
+    }
+
+    #[test]
+    fn an_unchanged_frame_is_drawn_the_same_and_not_sent_again() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut store = ImageStore::new(tx);
+        store.enable_for_test();
+        let key = Key::new(Kind::Eicon, "cat");
+        store.slots.insert(key.clone(), Slot::Loading);
+        let frames = vec![
+            (RgbaImage::from_pixel(20, 40, image::Rgba([255, 0, 0, 255])), Duration::from_millis(100)),
+            (RgbaImage::from_pixel(20, 40, image::Rgba([0, 255, 0, 255])), Duration::from_millis(100)),
+        ];
+        store.on_loaded(key.clone(), Some(frames));
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(10, 5)).unwrap();
+        let area = Rect::new(1, 1, 2, 2);
+        let mut draw = |store: &mut ImageStore| {
+            store.begin_frame();
+            terminal.draw(|frame| {
+                store.render(frame, &key, area);
+            })
+            .unwrap();
+            store.end_frame();
+            terminal.backend().buffer().cell((1, 1)).unwrap().symbol().to_string()
+        };
+        draw(&mut store);
+        let second = draw(&mut store);
+        let third = draw(&mut store);
+        assert_eq!(second, third, "the same frame at the same place keeps its drawing");
+        assert!(second.starts_with("\x1bP"), "and that drawing has no erase");
     }
 }
