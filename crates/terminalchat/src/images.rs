@@ -570,27 +570,20 @@ impl ImageStore {
         // The library erases the area before every Sixel image. Over a slow link that shows as
         // flicker, so a new frame at the same place is drawn over the old one without erasing.
         let same_place = loaded.last.is_some_and(|(last_area, last_index)| last_area == area && last_index != index);
+        if same_place && !loaded.quiet.contains_key(&index) {
+            let mut protocol = loaded.protocols[&index].clone();
+            strip_erase(&mut protocol);
+            loaded.quiet.insert(index, protocol);
+        }
+        let base = if same_place { &loaded.quiet[&index] } else { &loaded.protocols[&index] };
         if is_tmux {
-            let base = if same_place && loaded.quiet.contains_key(&index) { &loaded.quiet[&index] } else { &loaded.protocols[&index] };
             let mut placed = base.clone();
             if let Protocol::Sixel(sixel) = &mut placed {
                 sixel.data = with_position(&sixel.data, area, pane);
             }
             frame.render_widget(Image::new(&placed), area);
-            loaded.last = Some((area, index));
-            self.drawn.insert(key.clone());
-            self.areas.push(area);
-            return true;
-        }
-        if same_place {
-            if !loaded.quiet.contains_key(&index) {
-                let mut protocol = loaded.protocols[&index].clone();
-                strip_erase(&mut protocol);
-                loaded.quiet.insert(index, protocol);
-            }
-            frame.render_widget(Image::new(&loaded.quiet[&index]), area);
         } else {
-            frame.render_widget(Image::new(&loaded.protocols[&index]), area);
+            frame.render_widget(Image::new(base), area);
         }
         loaded.last = Some((area, index));
         self.drawn.insert(key.clone());
@@ -611,12 +604,17 @@ fn with_position(data: &str, area: Rect, pane: (u16, u16)) -> String {
 
 /// Removes the erase sequence in front of the Sixel data (not inside tmux passthrough).
 fn strip_erase(protocol: &mut Protocol) {
-    if let Protocol::Sixel(sixel) = protocol {
-        if !sixel.is_tmux {
-            if let Some(start) = sixel.data.find("\x1bP") {
-                sixel.data.drain(..start);
+    let Protocol::Sixel(sixel) = protocol else { return };
+    if sixel.is_tmux {
+        // Inside the tmux passthrough every escape is doubled: the image starts at ESC ESC P,
+        // the erase sits between the passthrough start and there.
+        if sixel.data.starts_with(TMUX_START) {
+            if let Some(body) = sixel.data.find("\x1b\x1bP") {
+                sixel.data.replace_range(TMUX_START.len()..body, "");
             }
         }
+    } else if let Some(start) = sixel.data.find("\x1bP") {
+        sixel.data.drain(..start);
     }
 }
 
@@ -943,5 +941,14 @@ mod tests {
         let frames = decode(&bytes, 8, 8, false).unwrap();
         let millis: Vec<u128> = frames.iter().map(|(_, delay)| delay.as_millis()).collect();
         assert_eq!(millis, vec![50, 100, 70]);
+    }
+
+    #[test]
+    fn the_erase_is_also_taken_out_inside_the_tmux_passthrough() {
+        let data = format!("{TMUX_START}\x1b\x1b[2X\x1b\x1b[1B\x1b\x1b[2X\x1b\x1b[1B\x1b\x1b[2A\x1b\x1bPq#0;2;100;0;0#0!8~\x1b\x1b\\\x1b\\");
+        let mut protocol = Protocol::Sixel(ratatui_image::protocol::sixel::Sixel { data, size: Size::new(2, 2), is_tmux: true });
+        strip_erase(&mut protocol);
+        let Protocol::Sixel(sixel) = protocol else { unreachable!() };
+        assert_eq!(sixel.data, format!("{TMUX_START}\x1b\x1bPq#0;2;100;0;0#0!8~\x1b\x1b\\\x1b\\"));
     }
 }
