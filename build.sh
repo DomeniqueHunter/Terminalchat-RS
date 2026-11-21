@@ -2,7 +2,8 @@
 # Release builds, copied to build/.
 #   ./build.sh            native build
 #   ./build.sh arm64      cross build for 64 bit ARM Linux (Raspberry Pi 5)
-#   ./build.sh all        both
+#   ./build.sh windows    cross build for 64 bit Windows (.exe, needs mingw-w64)
+#   ./build.sh all        native and arm64
 #   ./build.sh clean      remove target/ and everything in build/
 #   --restart             after a native build: restart the client with the new binary
 #                         (inside its tmux session if one runs, otherwise in this terminal)
@@ -46,6 +47,22 @@ build_arm64() {
     echo "-> build/${BIN}-aarch64"
 }
 
+WIN_TARGET="x86_64-pc-windows-gnu"
+WIN_LINKER="x86_64-w64-mingw32-gcc"
+
+build_windows() {
+    if ! command -v "${WIN_LINKER}" >/dev/null 2>&1; then
+        echo "${WIN_LINKER} not found. Install it (Debian/Ubuntu: apt install gcc-mingw-w64-x86-64)" >&2
+        exit 1
+    fi
+    rustup target add "${WIN_TARGET}"
+    export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="${WIN_LINKER}"
+    export CC_x86_64_pc_windows_gnu="${WIN_LINKER}"
+    cargo build --release --target "${WIN_TARGET}"
+    cp --remove-destination "target/${WIN_TARGET}/release/${BIN}.exe" "build/${BIN}-x86_64.exe"
+    echo "-> build/${BIN}-x86_64.exe"
+}
+
 # Ends the running client cleanly (SIGTERM, it saves its files) and starts the new binary in the
 # same tmux pane, so an attached window shows the new version at once.
 restart_client() {
@@ -83,7 +100,7 @@ clean() {
 }
 
 usage() {
-    echo "Usage: $0 [native|arm64|all|clean] [--restart]" >&2
+    echo "Usage: $0 [native|arm64|windows|all|clean] [--restart]" >&2
     exit 1
 }
 
@@ -91,7 +108,7 @@ TASK="native"
 RESTART=false
 for arg in "$@"; do
     case "${arg}" in
-        native|arm64|all|clean) TASK="${arg}" ;;
+        native|arm64|windows|all|clean) TASK="${arg}" ;;
         --restart) RESTART=true ;;
         *) usage ;;
     esac
@@ -101,6 +118,7 @@ mkdir -p build
 case "${TASK}" in
     native) build_native ;;
     arm64)  build_arm64 ;;
+    windows) build_windows ;;
     all)    build_native; build_arm64 ;;
     clean)  clean ;;
 esac

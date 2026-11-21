@@ -1,4 +1,5 @@
-//! File locations, identical to the Python version (XDG base directories).
+//! File locations, identical to the Python version (XDG base directories). On Windows the config
+//! lives in `%APPDATA%\terminalchat`, data in `%LOCALAPPDATA%\terminalchat`, the cache in its folder `cache`.
 
 use std::env;
 use std::path::PathBuf;
@@ -6,11 +7,11 @@ use std::path::PathBuf;
 pub const APP_NAME: &str = "terminalchat";
 
 fn home() -> PathBuf {
-    env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default()
 }
 
 fn expand_home(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
+    match path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         Some(rest) => home().join(rest),
         None if path == "~" => home(),
         None => PathBuf::from(path),
@@ -21,18 +22,25 @@ fn non_empty_var(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-fn xdg_dir(variable: &str, fallback: &str) -> PathBuf {
-    match non_empty_var(variable) {
-        Some(value) => PathBuf::from(value),
-        None => home().join(fallback),
+/// An XDG directory; on Windows the known folder in `windows_variable` takes the place of the
+/// fallback below the home folder.
+fn xdg_dir(variable: &str, fallback: &str, windows_variable: &str) -> PathBuf {
+    if let Some(value) = non_empty_var(variable) {
+        return PathBuf::from(value);
     }
+    if cfg!(windows) {
+        if let Some(value) = non_empty_var(windows_variable) {
+            return PathBuf::from(value);
+        }
+    }
+    home().join(fallback)
 }
 
 /// `TERMINALCHAT_CONFIG`, otherwise `$XDG_CONFIG_HOME/terminalchat/config.json`.
 pub fn config_file() -> PathBuf {
     match non_empty_var("TERMINALCHAT_CONFIG") {
         Some(value) => expand_home(&value),
-        None => xdg_dir("XDG_CONFIG_HOME", ".config").join(APP_NAME).join("config.json"),
+        None => xdg_dir("XDG_CONFIG_HOME", ".config", "APPDATA").join(APP_NAME).join("config.json"),
     }
 }
 
@@ -41,13 +49,18 @@ pub fn data_dir(configured: Option<&str>) -> PathBuf {
     let override_dir = non_empty_var("TERMINALCHAT_DATA").or_else(|| configured.filter(|v| !v.is_empty()).map(String::from));
     match override_dir {
         Some(value) => expand_home(&value),
-        None => xdg_dir("XDG_DATA_HOME", ".local/share").join(APP_NAME),
+        None => xdg_dir("XDG_DATA_HOME", ".local/share", "LOCALAPPDATA").join(APP_NAME),
     }
 }
 
 /// `$XDG_CACHE_HOME/terminalchat`, used for eicons, avatars and thumbnails.
+/// On Windows `%LOCALAPPDATA%\terminalchat\cache`, beside the data.
 pub fn cache_dir() -> PathBuf {
-    xdg_dir("XDG_CACHE_HOME", ".cache").join(APP_NAME)
+    let dir = xdg_dir("XDG_CACHE_HOME", ".cache", "LOCALAPPDATA").join(APP_NAME);
+    if cfg!(windows) && non_empty_var("XDG_CACHE_HOME").is_none() {
+        return dir.join("cache");
+    }
+    dir
 }
 
 #[cfg(test)]

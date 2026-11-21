@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -124,7 +123,11 @@ impl Config {
 
         let tmp_path = self.path.with_extension("tmp");
         fs::write(&tmp_path, buffer).map_err(write_error)?;
-        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600)).map_err(write_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600)).map_err(write_error)?;
+        }
         fs::rename(&tmp_path, &self.path).map_err(write_error)
     }
 }
@@ -162,7 +165,11 @@ mod tests {
         config.save().unwrap();
         let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["port"], 8722);
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 
     #[test]

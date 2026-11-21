@@ -34,6 +34,7 @@ cargo test
 ./build.sh          # native
 ./build.sh clean    # remove target/ and build/*
 ./build.sh arm64    # cross build, needs aarch64-linux-gnu-gcc; or run ./build.sh on the Pi itself
+./build.sh windows  # cross build of build/terminalchat-x86_64.exe, needs gcc-mingw-w64-x86-64
 ./build.sh --restart  # native build, then restart the client with the new binary
 ```
 
@@ -47,6 +48,8 @@ cargo test
 | Data | `~/.local/share/terminalchat/` | `TERMINALCHAT_DATA`, then `data_dir` in the config |
 | Cache | `~/.cache/terminalchat/` | `XDG_CACHE_HOME` |
 
+On Windows: configuration `%APPDATA%\terminalchat\config.json`, data `%LOCALAPPDATA%\terminalchat\`, cache `%LOCALAPPDATA%\terminalchat\cache\`.
+
 Unknown keys in `config.json` are kept when the file is saved.
 
 ## Run
@@ -56,6 +59,10 @@ Unknown keys in `config.json` are kept when the file is saved.
 ```
 
 Without a complete `config.json` a login screen appears. `/help` lists commands, `/shortcuts` the key bindings. Hold Shift to select text with the mouse.
+
+## Windows
+
+`terminalchat-x86_64.exe` runs directly, without tmux (so no `/minimize`, ctrl+t). Use Windows Terminal: images need Sixel, which it has since version 1.22; the old console window shows no images. If the image detection hangs or shows garbage, start with `set TERMINALCHAT_IMAGES=off` (cmd) or `$env:TERMINALCHAT_IMAGES="off"` (PowerShell). Closing the window ends the client like `/quit`.
 
 ## Images
 
@@ -137,5 +144,5 @@ Backgrounds (`#rrggbb`, or `""` for the terminal's own background, e.g. to keep 
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs clippy and the tests on x86_64 and ARM64 for every push and pull request. A tag like `v0.1.0` additionally builds both binaries and attaches `terminalchat-x86_64` and `terminalchat-aarch64` to a GitHub release (built on Ubuntu 22.04, so they also run on Raspberry Pi OS Bookworm). On the Pi, `./setup.sh --download` fetches the binary of the latest release instead of building.
+`.github/workflows/ci.yml` runs clippy and the tests on x86_64, ARM64 and Windows for every push to main and every pull request; other branches can be run by hand (Actions, *Run workflow*). A tag like `v0.1.0` additionally builds the binaries and attaches `terminalchat-x86_64`, `terminalchat-aarch64` and `terminalchat-x86_64.exe` to a GitHub release (built on Ubuntu 22.04, so they also run on Raspberry Pi OS Bookworm). On the Pi, `./setup.sh --download` fetches the binary of the latest release instead of building.
 

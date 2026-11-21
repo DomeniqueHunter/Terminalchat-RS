@@ -60,6 +60,7 @@ fn spawn_input(tx: mpsc::UnboundedSender<AppEvent>) {
 }
 
 /// SIGTERM and SIGHUP end the client like /quit, so the files are saved.
+#[cfg(unix)]
 fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
     use tokio::signal::unix::{signal, SignalKind};
     tokio::spawn(async move {
@@ -67,6 +68,22 @@ fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
         tokio::select! {
             _ = terminate.recv() => {}
             _ = hangup.recv() => {}
+        }
+        let _ = tx.send(AppEvent::Quit);
+    });
+}
+
+/// Closing the console window, logging off or shutting down ends the client like /quit.
+#[cfg(windows)]
+fn spawn_signals(tx: mpsc::UnboundedSender<AppEvent>) {
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_logoff, ctrl_shutdown};
+    tokio::spawn(async move {
+        let (Ok(mut close), Ok(mut brk), Ok(mut logoff), Ok(mut shutdown)) = (ctrl_close(), ctrl_break(), ctrl_logoff(), ctrl_shutdown()) else { return };
+        tokio::select! {
+            _ = close.recv() => {}
+            _ = brk.recv() => {}
+            _ = logoff.recv() => {}
+            _ = shutdown.recv() => {}
         }
         let _ = tx.send(AppEvent::Quit);
     });

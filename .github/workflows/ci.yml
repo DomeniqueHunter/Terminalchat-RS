@@ -5,6 +5,7 @@ on:
     branches: [main, master]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,11 +23,14 @@ jobs:
         include:
           - { os: ubuntu-22.04, arch: x86_64 }
           - { os: ubuntu-22.04-arm, arch: aarch64 }
+          - { os: windows-latest, arch: windows-x86_64 }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
@@ -39,18 +43,22 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-22.04, arch: x86_64 }
-          - { os: ubuntu-22.04-arm, arch: aarch64 }
+          - { os: ubuntu-22.04, arch: x86_64, ext: "" }
+          - { os: ubuntu-22.04-arm, arch: aarch64, ext: "" }
+          - { os: windows-latest, arch: x86_64, ext: ".exe" }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
-      - run: cp target/release/terminalchat terminalchat-${{ matrix.arch }}
+      - shell: bash
+        run: cp target/release/terminalchat${{ matrix.ext }} terminalchat-${{ matrix.arch }}${{ matrix.ext }}
       - uses: actions/upload-artifact@v4
         with:
-          name: terminalchat-${{ matrix.arch }}
-          path: terminalchat-${{ matrix.arch }}
+          name: terminalchat-${{ matrix.arch }}${{ matrix.ext }}
+          path: terminalchat-${{ matrix.arch }}${{ matrix.ext }}
 
   release:
     name: release
