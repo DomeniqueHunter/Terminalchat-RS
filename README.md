@@ -80,7 +80,7 @@ Every accepted change is used at once and saved to `config.json` right away; a v
 
 ## Notes
 
-`/note` (or `/notes`, `ctrl+x`) opens the F-List notes, the mails of the website, for all characters of the account at once:
+`/note` (or `/notes`, `ctrl+n`) opens the F-List notes, the mails of the website, for all characters of the account at once:
 
 - Tabs **Inbox** and **Sent** (left/right, tab or a click), each with From and To, so you see to which of your characters a note went. More notes load when the selection reaches the end; `f5` reloads.
 - `enter` or a second click reads a note (BBCode, links clickable), `esc` goes back.

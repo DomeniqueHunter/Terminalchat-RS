@@ -45,7 +45,7 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("ads", "[on|off]", "show or hide ads in the current channel"),
     ("gif", "[on|off]", "animate GIF eicons on or off"),
     ("settings", "", "change settings and colors"),
-    ("note", "", "read and write F-List notes of all your characters (ctrl+x)"),
+    ("note", "", "read and write F-List notes of all your characters (ctrl+n)"),
     ("char", "[name]", "switch character"),
     ("reconnect", "", "reconnect to the chat server now"),
     ("logout", "", "log out and forget password"),
@@ -72,7 +72,7 @@ pub const FOOTER_KEYS: &[(char, &str)] = &[
     ('e', "Emoji"),
     ('h', "Help"),
     ('p', "Profile"),
-    ('x', "Notes"),
+    ('n', "Notes"),
 ];
 
 pub const SHORTCUT_INFO: &[(&str, &str)] = &[
@@ -95,7 +95,7 @@ pub const SHORTCUT_INFO: &[(&str, &str)] = &[
     ("ctrl+f", "show/hide friends and channel users"),
     ("ctrl+t", "minimize (detach, keep running)"),
     ("ctrl+p", "profile of the private chat partner"),
-    ("ctrl+x", "notes: read and write F-List notes"),
+    ("ctrl+n", "notes: read and write F-List notes"),
     ("page up / page down", "scroll the chat"),
     ("ctrl+page up / down", "jump to the start of the log / to now"),
     ("alt+up / alt+down", "previous / next chat"),

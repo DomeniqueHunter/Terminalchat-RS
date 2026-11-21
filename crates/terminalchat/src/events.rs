@@ -195,7 +195,7 @@ fn ctrl_key(app: &mut App, c: char) {
         'f' => app.show_sidebar = !app.show_sidebar,
         't' => app.minimize_requested = true,
         'p' => app.run_command("/profile"),
-        'x' => app.show_notes(),
+        'n' => app.show_notes(),
         'j' => app.input.newline(),
         'v' => {
             let text = app.clipboard.clone();

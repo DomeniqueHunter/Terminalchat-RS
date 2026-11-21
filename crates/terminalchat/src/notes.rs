@@ -1,4 +1,4 @@
-//! The notes window (ctrl+x, /note): the F-List notes of all characters of the account, read,
+//! The notes window (ctrl+n, /note): the F-List notes of all characters of the account, read,
 //! answer as any of them and write new ones. The website calls run in tasks; their answers come
 //! back as `AppEvent::Notes`.
 
