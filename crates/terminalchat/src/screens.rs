@@ -45,6 +45,7 @@ pub enum Screen {
     Picker(PickerScreen),
     Edit(EditScreen),
     Settings(SettingsScreen),
+    Notes(Box<crate::notes::NotesScreen>),
 }
 
 impl Screen {
@@ -57,6 +58,7 @@ impl Screen {
             Screen::Picker(screen) => screen.on_key(key),
             Screen::Edit(screen) => screen.on_key(key),
             Screen::Settings(screen) => screen.on_key(key),
+            Screen::Notes(screen) => screen.on_key(key),
         }
     }
 
@@ -71,6 +73,7 @@ impl Screen {
             Screen::Picker(screen) => screen.move_selection(rows),
             Screen::Character(screen) => screen.move_selection(rows),
             Screen::Settings(screen) if screen.edit.is_none() => screen.move_selection(rows),
+            Screen::Notes(screen) => screen.scroll(rows),
             _ => {}
         }
     }

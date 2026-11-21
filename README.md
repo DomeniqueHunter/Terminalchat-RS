@@ -78,6 +78,17 @@ The mouse works too: a click on a tab switches, a click on a row chooses it and 
 
 Every accepted change is used at once and saved to `config.json` right away; a value that cannot be read is refused with the reason. `r` sets an entry back to its default. The `[Reset]` button at the top right (or `R`) sets everything of the current tab back to default after a confirmation (`y` or a second click): on *General* all general settings, on *Colors* all colors. Colors equal to the default are not stored.
 
+## Notes
+
+`/note` (or `/notes`, `ctrl+x`) opens the F-List notes, the mails of the website, for all characters of the account at once:
+
+- Tabs **Inbox** and **Sent** (left/right, tab or a click), each with From and To, so you see to which of your characters a note went. More notes load when the selection reaches the end; `f5` reloads.
+- `enter` or a second click reads a note (BBCode, links clickable), `esc` goes back.
+- `r` answers: the sender is the character that got the note, the recipient the one who wrote it, the title `Re: ...`. `n` writes a new note, sent by the chat character. In the draft `tab` walks the fields, left/right in *From* picks any character of the account, `ctrl+j` (or `ctrl+enter`) is a new line, `enter` in the message sends, `esc` cancels (asks first if there is text).
+- `d` moves a note to the trash after a confirmation (`y`).
+
+There is no API for notes; the client logs in on the website with the account and password of the chat (kept in memory only, no cookies on disk) and uses the same calls as the website. If F-List changes the website, this may break.
+
 ## Colors
 
 All colors can be changed in the block `colors` of `config.json`. Only the entries that differ from the defaults are needed; the Python version keeps the block when it saves the config. A style is written like in the Python version: `bold`, `dim`, `italic`, `underline`, `strike`, `reverse`, a color `#rrggbb` and a background `on #rrggbb`. Entries that cannot be read are reported at start and keep their default.

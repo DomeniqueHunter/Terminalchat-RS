@@ -22,15 +22,15 @@ const LIST_WIDTH: u16 = 26;
 const SIDEBAR_WIDTH: u16 = 26;
 const MAX_INPUT_ROWS: usize = 8;
 
-fn spans(segs: &[Seg]) -> Line<'static> {
+pub(crate) fn spans(segs: &[Seg]) -> Line<'static> {
     Line::from(segs.iter().map(|seg| Span::styled(seg.text.clone(), seg.style)).collect::<Vec<_>>())
 }
 
-fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
+pub(crate) fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
     Rect { x, y, width, height }
 }
 
-fn centered(area: Rect, width: u16, height: u16) -> Rect {
+pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
     rect(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height)
@@ -602,7 +602,7 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
 
 // ------------------------------------------------------------------ screens
 
-fn draw_lines(frame: &mut Frame, app: &mut App, area: Rect, lines: &[Vec<Seg>], scroll: &mut usize) {
+pub(crate) fn draw_lines(frame: &mut Frame, app: &mut App, area: Rect, lines: &[Vec<Seg>], scroll: &mut usize) {
     let width = area.width as usize;
     let wrapped: Vec<Vec<Seg>> = lines.iter().flat_map(|line| wrap(line, width)).collect();
     *scroll = (*scroll).min(wrapped.len().saturating_sub(area.height as usize));
@@ -622,7 +622,7 @@ fn draw_lines(frame: &mut Frame, app: &mut App, area: Rect, lines: &[Vec<Seg>], 
     frame.render_widget(Paragraph::new(shown), area);
 }
 
-fn modal(frame: &mut Frame, area: Rect, title: &str) -> Rect {
+pub(crate) fn modal(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     frame.render_widget(Clear, area);
     crate::colors::fill(frame, area, "panel");
     let block = Block::default().borders(Borders::ALL).border_style(color("focus")).title(Span::styled(format!(" {title} "), bold()));
@@ -631,9 +631,47 @@ fn modal(frame: &mut Frame, area: Rect, title: &str) -> Rect {
     inner
 }
 
-fn footer(frame: &mut Frame, area: Rect, text: &str) {
+pub(crate) fn footer(frame: &mut Frame, area: Rect, text: &str) {
     let line = rect(area.x + 2, area.y + area.height - 1, area.width.saturating_sub(4), 1);
     frame.render_widget(Paragraph::new(Span::styled(format!(" {text} "), dim())), line);
+}
+
+/// Breaks the text of an input into rows of at most `columns` cells; also returns the row and
+/// column of the cursor.
+pub(crate) fn wrap_input(text: &str, cursor_index: usize, columns: usize) -> (Vec<String>, (usize, usize)) {
+    let mut lines: Vec<String> = vec![String::new()];
+    let mut used = 0usize;
+    let mut cursor_at = (0usize, 0usize);
+    let mut count = 0usize;
+    for (index, c) in text.chars().enumerate() {
+        count += 1;
+        if c == '\n' {
+            if index == cursor_index {
+                cursor_at = (lines.len() - 1, used);
+            }
+            lines.push(String::new());
+            used = 0;
+            continue;
+        }
+        let w = char_width(c);
+        if used + w > columns {
+            lines.push(String::new());
+            used = 0;
+        }
+        if index == cursor_index {
+            cursor_at = (lines.len() - 1, used);
+        }
+        lines.last_mut().unwrap().push(c);
+        used += w;
+    }
+    if cursor_index >= count {
+        if used >= columns {
+            lines.push(String::new());
+            used = 0;
+        }
+        cursor_at = (lines.len() - 1, used);
+    }
+    (lines, cursor_at)
 }
 
 fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
@@ -718,38 +756,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             cursor = Some((inner.x + 9 + text_width(&picker.filter) as u16, inner.y));
         }
         Screen::Edit(edit) => {
-            let columns = 60usize;
-            let mut lines: Vec<String> = vec![String::new()];
-            let mut used = 0usize;
-            let mut cursor_at = (0usize, 0usize);
-            let cursor_index = edit.input.cursor();
-            for (index, c) in edit.input.text().chars().enumerate() {
-                if c == '\n' {
-                    if index == cursor_index {
-                        cursor_at = (lines.len() - 1, used);
-                    }
-                    lines.push(String::new());
-                    used = 0;
-                    continue;
-                }
-                let w = char_width(c);
-                if used + w > columns {
-                    lines.push(String::new());
-                    used = 0;
-                }
-                if index == cursor_index {
-                    cursor_at = (lines.len() - 1, used);
-                }
-                lines.last_mut().unwrap().push(c);
-                used += w;
-            }
-            if cursor_index >= edit.input.char_count() {
-                if used >= columns {
-                    lines.push(String::new());
-                    used = 0;
-                }
-                cursor_at = (lines.len() - 1, used);
-            }
+            let (lines, cursor_at) = wrap_input(edit.input.text(), edit.input.cursor(), 60);
             let outer = centered(area, 64, (lines.len() as u16 + 4).min(area.height));
             let inner = modal(frame, outer, &edit.title.clone());
             crate::colors::fill(frame, outer, "status_box");
@@ -764,6 +771,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             footer(frame, outer, "enter: save, ctrl+enter / ctrl+j: new line, esc: cancel, ctrl+u: clear");
         }
         Screen::Settings(settings) => cursor = draw_settings(frame, area, settings),
+        Screen::Notes(notes) => cursor = crate::notes_view::draw(frame, app, area, notes),
     }
     if let Some((x, y)) = cursor {
         frame.set_cursor_position((x, y));

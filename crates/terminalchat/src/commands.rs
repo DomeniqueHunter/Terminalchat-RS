@@ -45,6 +45,7 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("ads", "[on|off]", "show or hide ads in the current channel"),
     ("gif", "[on|off]", "animate GIF eicons on or off"),
     ("settings", "", "change settings and colors"),
+    ("note", "", "read and write F-List notes of all your characters (ctrl+x)"),
     ("char", "[name]", "switch character"),
     ("reconnect", "", "reconnect to the chat server now"),
     ("logout", "", "log out and forget password"),
@@ -71,6 +72,7 @@ pub const FOOTER_KEYS: &[(char, &str)] = &[
     ('e', "Emoji"),
     ('h', "Help"),
     ('p', "Profile"),
+    ('x', "Notes"),
 ];
 
 pub const SHORTCUT_INFO: &[(&str, &str)] = &[
@@ -93,6 +95,7 @@ pub const SHORTCUT_INFO: &[(&str, &str)] = &[
     ("ctrl+f", "show/hide friends and channel users"),
     ("ctrl+t", "minimize (detach, keep running)"),
     ("ctrl+p", "profile of the private chat partner"),
+    ("ctrl+x", "notes: read and write F-List notes"),
     ("page up / page down", "scroll the chat"),
     ("ctrl+page up / down", "jump to the start of the log / to now"),
     ("alt+up / alt+down", "previous / next chat"),
@@ -115,6 +118,7 @@ pub fn resolve_alias(name: &str) -> String {
         "create" => "makeroom",
         "detach" => "minimize",
         "keys" => "shortcuts",
+        "notes" => "note",
         _ => name.as_str(),
     }
     .to_string()
@@ -258,6 +262,7 @@ impl App {
             "ads" => self.cmd_ads(args),
             "gif" => self.cmd_gif(args),
             "settings" => self.screens.push(Screen::Settings(SettingsScreen::new(&self.config))),
+            "note" => self.show_notes(),
             "char" => self.cmd_char(args),
             "reconnect" => {
                 if self.online {

@@ -21,6 +21,7 @@ pub fn handle(app: &mut App, event: Event) {
         Event::Paste(text) => paste(app, &text),
         _ => {}
     }
+    app.flush_notes();
 }
 
 fn paste(app: &mut App, text: &str) {
@@ -29,6 +30,7 @@ fn paste(app: &mut App, text: &str) {
         Some(Screen::Picker(picker)) => picker.filter.push_str(&text.replace('\n', " ")),
         Some(Screen::Edit(edit)) => edit.insert(&text.replace('\n', " ")),
         Some(Screen::Settings(settings)) => settings.paste(&text.replace('\n', " ")),
+        Some(Screen::Notes(notes)) => notes.paste(&text),
         Some(Screen::Login(login)) => match login.focus {
             0 => login.account.push_str(text.trim()),
             1 => login.password.push_str(text.trim()),
@@ -193,6 +195,7 @@ fn ctrl_key(app: &mut App, c: char) {
         'f' => app.show_sidebar = !app.show_sidebar,
         't' => app.minimize_requested = true,
         'p' => app.run_command("/profile"),
+        'x' => app.show_notes(),
         'j' => app.input.newline(),
         'v' => {
             let text = app.clipboard.clone();
@@ -339,6 +342,9 @@ fn on_click(app: &mut App, column: u16, row: u16) {
         let action = settings.click(column, row);
         apply_action(app, action);
         return;
+    }
+    if let Some(Screen::Notes(notes)) = app.screens.last_mut() {
+        notes.click(column, row);
     }
     if let Some(Screen::Profile(profile)) = app.screens.last_mut() {
         if profile.click_tab(column, row) {

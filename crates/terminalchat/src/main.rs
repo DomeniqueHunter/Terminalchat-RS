@@ -6,6 +6,8 @@ mod config;
 mod events;
 mod images;
 mod input;
+mod notes;
+mod notes_view;
 mod pager;
 mod paths;
 mod presence;
@@ -105,6 +107,7 @@ fn handle(app: &mut App, event: AppEvent) {
         AppEvent::Ticket(purpose, result) => app.on_ticket(purpose, result),
         AppEvent::Connected(generation, result) => app.on_connected(generation, result),
         AppEvent::Profile(name, result) => app.on_profile(&name, result),
+        AppEvent::Notes(reply) => app.on_notes(reply),
         AppEvent::Image(key, frames) => app.images.on_loaded(key, frames),
         AppEvent::Attached(attached, left, top) => {
             app.images.attached = attached;

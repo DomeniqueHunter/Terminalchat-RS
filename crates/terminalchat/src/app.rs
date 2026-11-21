@@ -47,6 +47,8 @@ pub enum AppEvent {
     Ticket(TicketPurpose, fchat::Result<LoginResult>),
     Connected(u64, fchat::Result<Connection>),
     Profile(String, Result<fchat::Profile, String>),
+    /// An answer of the website for the notes window.
+    Notes(crate::notes::Reply),
     Image(Key, Option<Frames>),
     /// Whether a tmux client is attached (animations pause while detached).
     Attached(bool, u16, u16),
@@ -175,6 +177,8 @@ pub struct App {
     pub pager: Pager,
     pub images: ImageStore,
     pub screens: Vec<Screen>,
+    /// The website login of the notes window, kept while the client runs.
+    pub notes_session: Option<fchat::NotesSession>,
     pub toasts: Vec<Toast>,
     pub show_sidebar: bool,
     pub sidebar_tab: SidebarTab,
@@ -246,6 +250,7 @@ impl App {
             chat_draft: String::new(),
             pager: Pager::default(),
             screens: Vec::new(),
+            notes_session: None,
             toasts: Vec::new(),
             show_sidebar,
             sidebar_tab: SidebarTab::Friends,
@@ -1439,6 +1444,44 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn show_notes(&mut self) {
+        if self.screens.iter().any(|screen| matches!(screen, Screen::Notes(_))) {
+            return;
+        }
+        if self.config.account.is_empty() || self.config.password.is_empty() {
+            self.notify("Notes need the account and password of the chat login", Severity::Warning);
+            return;
+        }
+        self.screens.push(Screen::Notes(Box::new(crate::notes::NotesScreen::new(&self.character))));
+        self.flush_notes();
+    }
+
+    /// Starts the website calls the notes window asked for.
+    pub fn flush_notes(&mut self) {
+        let mut requests = Vec::new();
+        for screen in &mut self.screens {
+            if let Screen::Notes(notes) = screen {
+                requests.append(&mut notes.requests);
+            }
+        }
+        for request in requests {
+            crate::notes::spawn(self.tx.clone(), self.notes_session.clone(), self.config.account.clone(), self.config.password.clone(), request);
+        }
+    }
+
+    pub fn on_notes(&mut self, reply: crate::notes::Reply) {
+        if let crate::notes::Reply::Session(session) = &reply {
+            self.notes_session = Some(session.clone());
+        }
+        for screen in &mut self.screens {
+            if let Screen::Notes(notes) = screen {
+                notes.on_reply(reply);
+                break;
+            }
+        }
+        self.flush_notes();
     }
 
     pub fn show_info(&mut self, title: &str, lines: Vec<Vec<Seg>>, wide: bool) {
