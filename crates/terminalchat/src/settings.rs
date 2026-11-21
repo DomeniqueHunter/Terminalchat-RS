@@ -43,7 +43,7 @@ pub struct Setting {
     pub effect: Effect,
 }
 
-pub const SETTINGS: [Setting; 14] = [
+pub const SETTINGS: [Setting; 15] = [
     Setting { group: "Connection", key: "server", field: Field::Text, effect: Effect::Reconnect },
     Setting { group: "Connection", key: "protocol", field: Field::Choice(&["wss://", "ws://"]), effect: Effect::Reconnect },
     Setting { group: "Connection", key: "endpoint", field: Field::Text, effect: Effect::Reconnect },
@@ -51,6 +51,7 @@ pub const SETTINGS: [Setting; 14] = [
     Setting { group: "Start", key: "remember_password", field: Field::Bool, effect: Effect::Now },
     Setting { group: "Display", key: "show_sidebar", field: Field::Bool, effect: Effect::Now },
     Setting { group: "Display", key: "show_ads", field: Field::Bool, effect: Effect::Now },
+    Setting { group: "Display", key: "ping", field: Field::Bool, effect: Effect::Now },
     Setting { group: "Images", key: "eicons", field: Field::Choice(&["inline", "off"]), effect: Effect::Restart },
     Setting { group: "Images", key: "eicon_height", field: Field::Number { min: 1, max: 20 }, effect: Effect::Now },
     Setting { group: "Images", key: "eicon_animate", field: Field::Bool, effect: Effect::Now },
@@ -76,6 +77,7 @@ pub fn value(config: &Config, key: &str) -> String {
         "remember_password" => config.remember_password.to_string(),
         "show_sidebar" => config.show_sidebar.to_string(),
         "show_ads" => config.show_ads.to_string(),
+        "ping" => config.ping.to_string(),
         "eicons" => config.eicons.clone(),
         "eicon_height" => config.eicon_height.to_string(),
         "eicon_animate" => config.eicon_animate.to_string(),
@@ -114,6 +116,7 @@ pub fn apply(config: &mut Config, key: &str, text: &str) -> Result<(), String> {
         "remember_password" => config.remember_password = parse_bool(text)?,
         "show_sidebar" => config.show_sidebar = parse_bool(text)?,
         "show_ads" => config.show_ads = parse_bool(text)?,
+        "ping" => config.ping = parse_bool(text)?,
         "eicons" => config.eicons = text.to_string(),
         "eicon_height" => config.eicon_height = parse_number(text, setting.field)?,
         "eicon_animate" => config.eicon_animate = parse_bool(text)?,
@@ -185,6 +188,7 @@ mod tests {
             ("remember_password", "false"),
             ("show_sidebar", "true"),
             ("show_ads", "false"),
+            ("ping", "true"),
             ("eicons", "off"),
             ("eicon_height", "6"),
             ("eicon_animate", "false"),

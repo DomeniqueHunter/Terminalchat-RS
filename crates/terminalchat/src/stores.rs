@@ -1,7 +1,8 @@
 //! Small JSON files next to the logs, compatible with the Python version:
-//! pins, own status, ad visibility, ad drafts and known genders.
+//! pins, own status, ad visibility, ad drafts and known genders. `muted.json` (chats without
+//! ping) is new in this version.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -153,6 +154,37 @@ impl AdSettings {
     }
 }
 
+/// Chats that do not ping (`/mute`), by chat id.
+pub struct Muted {
+    path: PathBuf,
+    chats: BTreeSet<String>,
+}
+
+impl Muted {
+    pub fn load(path: PathBuf) -> Muted {
+        let chats = match read_json(&path) {
+            Some(Value::Array(ids)) => ids.iter().filter_map(Value::as_str).map(String::from).collect(),
+            _ => BTreeSet::new(),
+        };
+        Muted { path, chats }
+    }
+
+    pub fn contains(&self, chat_id: &str) -> bool {
+        self.chats.contains(chat_id)
+    }
+
+    pub fn set(&mut self, chat_ids: &[String], muted: bool) {
+        for id in chat_ids {
+            if muted {
+                self.chats.insert(id.clone());
+            } else {
+                self.chats.remove(id);
+            }
+        }
+        write_atomic(&self.path, &serde_json::to_string_pretty(&self.chats).unwrap_or_default());
+    }
+}
+
 pub struct AdDrafts {
     path: PathBuf,
     drafts: BTreeMap<String, String>,
@@ -283,5 +315,15 @@ mod tests {
         genders.set("Alice", Some("Female"));
         genders.save();
         assert_eq!(GenderStore::load(path).get("ALICE"), Some("Female"));
+    }
+
+    #[test]
+    fn muted_chats_survive_a_restart() {
+        let path = temp_file("muted");
+        let mut muted = Muted::load(path.clone());
+        muted.set(&["channel:Frontpage".into(), "user:Bo".into()], true);
+        muted.set(&["user:Bo".into()], false);
+        let loaded = Muted::load(path);
+        assert!(loaded.contains("channel:Frontpage") && !loaded.contains("user:Bo"));
     }
 }

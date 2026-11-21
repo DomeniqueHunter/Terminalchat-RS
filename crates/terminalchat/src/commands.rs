@@ -44,6 +44,8 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("pins", "", "show pinned chats"),
     ("ads", "[on|off]", "show or hide ads in the current channel"),
     ("gif", "[on|off]", "animate GIF eicons on or off"),
+    ("mute", "[chat]", "switch the message ping off or on again for the current or a named chat"),
+    ("muteall", "", "switch the ping off for all open chats; again: on for all"),
     ("settings", "", "change settings and colors"),
     ("note", "", "read and write F-List notes of all your characters (ctrl+n)"),
     ("char", "[name]", "switch character"),
@@ -261,6 +263,8 @@ impl App {
             }
             "ads" => self.cmd_ads(args),
             "gif" => self.cmd_gif(args),
+            "mute" => self.cmd_mute(args),
+            "muteall" => self.cmd_muteall(),
             "settings" => self.screens.push(Screen::Settings(SettingsScreen::new(&self.config))),
             "note" => self.show_notes(),
             "char" => self.cmd_char(args),
@@ -474,6 +478,40 @@ impl App {
     fn image_info(&self) -> String {
         let (width, height) = self.images.font();
         format!("images: {}, cell {width}x{height} px", self.images.protocol_name())
+    }
+
+    fn ping_note(&self) -> &'static str {
+        if self.config.ping {
+            ""
+        } else {
+            " (the ping itself is off, see /settings)"
+        }
+    }
+
+    fn cmd_mute(&mut self, args: &str) {
+        let name = args.trim();
+        let chat = if name.is_empty() {
+            self.current_chat().cloned()
+        } else {
+            let wanted = name.trim_start_matches('#').to_lowercase();
+            self.store.chats.iter().find(|chat| chat.kind != CONSOLE && (chat.key.to_lowercase() == wanted || chat.title.to_lowercase() == wanted)).cloned()
+        };
+        let Some(chat) = chat.filter(|chat| chat.kind != CONSOLE) else {
+            self.warn(if name.is_empty() { "Usage: /mute [chat], in a channel or private chat".to_string() } else { format!("No open chat named {name}") });
+            return;
+        };
+        let muted = !self.muted.contains(&chat.id());
+        self.muted.set(&[chat.id()], muted);
+        let state = if muted { "muted" } else { "pings again" };
+        self.notify(format!("{}: {state}{}", chat.title, self.ping_note()), Severity::Information);
+    }
+
+    fn cmd_muteall(&mut self) {
+        let ids: Vec<String> = self.store.chats.iter().filter(|chat| chat.kind != CONSOLE).map(|chat| chat.id()).collect();
+        let muted = ids.iter().any(|id| !self.muted.contains(id));
+        self.muted.set(&ids, muted);
+        let state = if muted { "All open chats muted" } else { "All open chats ping again" };
+        self.notify(format!("{state}{}", self.ping_note()), Severity::Information);
     }
 
     fn cmd_gif(&mut self, args: &str) {

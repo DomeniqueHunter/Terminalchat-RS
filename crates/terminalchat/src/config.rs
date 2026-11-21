@@ -23,6 +23,8 @@ pub struct Config {
     pub default_channels: Vec<String>,
     pub show_sidebar: bool,
     pub show_ads: bool,
+    /// Terminal bell for every incoming message, except in chats muted with /mute.
+    pub ping: bool,
     pub log_keep_days: u32,
     pub eicons: String,
     pub eicon_height: u32,
@@ -55,6 +57,7 @@ impl Default for Config {
             default_channels: Vec::new(),
             show_sidebar: false,
             show_ads: true,
+            ping: false,
             log_keep_days: 0,
             eicons: "inline".into(),
             eicon_height: 4,

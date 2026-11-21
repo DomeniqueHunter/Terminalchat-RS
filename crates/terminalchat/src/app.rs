@@ -154,6 +154,8 @@ pub struct App {
     pub store: ChatStore,
     pub pins: Pins,
     pub ads: AdSettings,
+    pub muted: crate::stores::Muted,
+    last_ping: Option<Instant>,
     pub ad_drafts: AdDrafts,
     pub genders: GenderStore,
     pub own_status: OwnStatus,
@@ -228,6 +230,8 @@ impl App {
             startup_notes: Vec::new(),
             pins: Pins::load(base.join("pins.json")),
             ads: AdSettings::load(base.join("ads.json"), show_ads),
+            muted: crate::stores::Muted::load(base.join("muted.json")),
+            last_ping: None,
             ad_drafts: AdDrafts::load(base.join("ad_drafts.json")),
             genders: GenderStore::load(chats_dir.join("genders.json")),
             own_status: OwnStatus::load(base.join("status.json")),
@@ -499,6 +503,7 @@ impl App {
         let base = self.store.base.clone();
         self.pins = Pins::load(base.join("pins.json"));
         self.ads = AdSettings::load(base.join("ads.json"), self.config.show_ads);
+        self.muted = crate::stores::Muted::load(base.join("muted.json"));
         self.ad_drafts = AdDrafts::load(base.join("ad_drafts.json"));
         self.genders = GenderStore::load(chats_dir.join("genders.json"));
         self.own_status = OwnStatus::load(base.join("status.json"));
@@ -1231,6 +1236,19 @@ impl App {
         let chat = self.store.get_or_create(sender, USER, None).clone();
         let line = self.store.append(&chat, sender, message);
         self.show_line(&chat.id(), &line, true);
+        self.ping(&chat.id());
+    }
+
+    /// The terminal bell for a new message, at most once a second.
+    fn ping(&mut self, chat_id: &str) {
+        if !self.config.ping || self.muted.contains(chat_id) {
+            return;
+        }
+        if self.last_ping.is_some_and(|last| last.elapsed() < Duration::from_secs(1)) {
+            return;
+        }
+        self.last_ping = Some(Instant::now());
+        self.osc_queue.push("\x07".into());
     }
 
     fn channel_chat(&mut self, code: &str) -> crate::store::Chat {
@@ -1245,6 +1263,7 @@ impl App {
         let chat = self.channel_chat(code);
         let line = self.store.append(&chat, sender, message);
         self.show_line(&chat.id(), &line, true);
+        self.ping(&chat.id());
     }
 
     fn on_ad(&mut self, code: &str, sender: &str, message: &str) {

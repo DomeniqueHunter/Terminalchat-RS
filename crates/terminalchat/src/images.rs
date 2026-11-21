@@ -250,9 +250,11 @@ pub fn detect_picker(config: &Config) -> Option<Picker> {
     if matches!(forced.as_deref(), Some("off" | "0" | "no" | "false")) {
         return None;
     }
+    // Windows Terminal has Sixel but does not answer the query in a way the detection accepts
+    let windows_sixel = cfg!(windows) && forced.is_none();
     let mut picker = match Picker::from_query_stdio() {
         Ok(picker) => picker,
-        Err(_) if forced.is_some() => {
+        Err(_) if forced.is_some() || windows_sixel => {
             let (width, height) = window_font().unwrap_or(DEFAULT_FONT);
             let mut picker = Picker::halfblocks();
             picker = rebuilt(&picker, FontSize::new(width, height));
@@ -262,6 +264,9 @@ pub fn detect_picker(config: &Config) -> Option<Picker> {
     };
     if let Some(protocol) = forced.as_deref().and_then(protocol_by_name) {
         picker.set_protocol_type(protocol);
+    }
+    if windows_sixel && picker.protocol_type() == ProtocolType::Halfblocks {
+        picker.set_protocol_type(ProtocolType::Sixel);
     }
     if let Some((width, height)) = config.cell_size.as_deref().and_then(parse_cell_size) {
         picker = rebuilt(&picker, FontSize::new(width, height));

@@ -119,6 +119,11 @@ impl LoginScreen {
             KeyCode::Tab | KeyCode::Down => self.focus = (self.focus + 1) % 3,
             KeyCode::BackTab | KeyCode::Up => self.focus = (self.focus + 2) % 3,
             KeyCode::Enter => {
+                if self.focus == 0 && !self.account.trim().is_empty() && self.password.is_empty() {
+                    self.focus = 1;
+                    self.message.clear();
+                    return Action::None;
+                }
                 if self.account.trim().is_empty() || self.password.is_empty() {
                     self.message = "Account and password are required".into();
                     return Action::None;
@@ -977,5 +982,17 @@ mod tests {
         profile.on_key(KeyEvent::from(KeyCode::Right));
         assert_eq!((profile.tab, profile.scroll[0]), (ProfileTab::Info, 2));
         assert!(matches!(profile.on_key(KeyEvent::from(KeyCode::Char('o'))), Action::OpenLink(url) if url.ends_with("/c/Somebody")));
+    }
+
+    #[test]
+    fn enter_in_the_account_field_moves_on_to_the_password() {
+        let mut login = LoginScreen::new("", false, "");
+        for c in "me".chars() {
+            login.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::None));
+        assert_eq!((login.focus, login.message.as_str()), (1, ""));
+        login.on_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::Login { .. }));
     }
 }

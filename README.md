@@ -62,7 +62,7 @@ Without a complete `config.json` a login screen appears. `/help` lists commands,
 
 ## Windows
 
-`terminalchat-x86_64.exe` runs directly, without tmux (so no `/minimize`, ctrl+t). Use Windows Terminal: images need Sixel, which it has since version 1.22; the old console window shows no images. If the image detection hangs or shows garbage, start with `set TERMINALCHAT_IMAGES=off` (cmd) or `$env:TERMINALCHAT_IMAGES="off"` (PowerShell). Closing the window ends the client like `/quit`.
+`terminalchat-x86_64.exe` runs directly, without tmux (so no `/minimize`, ctrl+t). Use Windows Terminal: images need Sixel, which it has since version 1.22; the old console window shows no images. Windows Terminal does not answer the graphics query, so on Windows the client uses Sixel when the query fails; if the eicons have the wrong size, set `cell_size` in config.json (e.g. `"10x20"`). If images hang or show garbage, start with `set TERMINALCHAT_IMAGES=off` (cmd) or `$env:TERMINALCHAT_IMAGES="off"` (PowerShell). Closing the window ends the client like `/quit`.
 
 ## Images
 
@@ -84,6 +84,10 @@ Without a complete `config.json` a login screen appears. `/help` lists commands,
 The mouse works too: a click on a tab switches, a click on a row chooses it and a second click changes it; in the color editor a click picks a swatch, toggles a check box or focuses a part.
 
 Every accepted change is used at once and saved to `config.json` right away; a value that cannot be read is refused with the reason. `r` sets an entry back to its default. The `[Reset]` button at the top right (or `R`) sets everything of the current tab back to default after a confirmation (`y` or a second click): on *General* all general settings, on *Colors* all colors. Colors equal to the default are not stored.
+
+## Ping
+
+`ping` in `/settings` (General, off by default) rings the terminal bell for every incoming message, private or in a channel, at most once a second. The terminal decides what the bell does (sound, flash or nothing; in Konsole: profile, *Terminal Bell*). `/mute` switches the ping off for the current chat, `/mute <chat>` for a named one (channel or character), and the same command again switches it back on. `/muteall` mutes all open chats, again: unmutes them. Muted chats are kept in `muted.json` per character.
 
 ## Notes
 
