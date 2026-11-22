@@ -89,6 +89,12 @@ Every accepted change is used at once and saved to `config.json` right away; a v
 
 `ping` in `/settings` (General, off by default) rings the terminal bell for every incoming message, private or in a channel, at most once a second. The terminal decides what the bell does (sound, flash or nothing; in Konsole: profile, *Terminal Bell*). `/mute` switches the ping off for the current chat, `/mute <chat>` for a named one (channel or character), and the same command again switches it back on. `/muteall` mutes all open chats, again: unmutes them. Muted chats are kept in `muted.json` per character.
 
+## Friends and bookmarks
+
+`/friends` opens a window with four tabs for all characters of the account: **Friends**, **Requests to you**, **Your requests** and **Bookmarks**, each with the online status. The first three are grouped by your characters, the active one first. `/` searches all tabs at once (tab titles show the hits, `esc` clears it); `/friends <name>` opens the window with that search. Keys: `enter` private chat, `p` profile, `a` accept a request, `d` end a friendship / deny / take back / remove a bookmark (asks `y`), `n` new friend request (pick the sender with left/right) or, in Bookmarks, a new bookmark, `f5` reload.
+
+Commands: `/bookmark [name]` sets or removes a bookmark, `/friend [name]` sends a friend request from the active character, `/unfriend [name]` ends a friendship (that of the active character first). Without a name they apply to the partner of the open private chat. On a profile page `b` bookmarks and `f` sends a friend request. New requests and friendships from the server show a message and ring the bell if `ping` is on. It uses the JSON API of f-list.net with the API ticket of the login.
+
 ## Notes
 
 `/note` (or `/notes`, `ctrl+n`) opens the F-List notes, the mails of the website, for all characters of the account at once:

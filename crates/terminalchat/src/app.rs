@@ -49,6 +49,10 @@ pub enum AppEvent {
     Profile(String, Result<fchat::Profile, String>),
     /// An answer of the website for the notes window.
     Notes(crate::notes::Reply),
+    /// An answer of the friends and bookmarks API.
+    Friends(crate::friends::Reply),
+    /// The gender of a character read from its profile, for the name color.
+    Gender(String, Option<String>),
     Image(Key, Option<Frames>),
     /// Whether a tmux client is attached (animations pause while detached).
     Attached(bool, u16, u16),
@@ -156,6 +160,8 @@ pub struct App {
     pub ads: AdSettings,
     pub muted: crate::stores::Muted,
     last_ping: Option<Instant>,
+    /// Own characters whose gender was asked for, so it happens once.
+    gender_lookups: HashSet<String>,
     pub ad_drafts: AdDrafts,
     pub genders: GenderStore,
     pub own_status: OwnStatus,
@@ -232,6 +238,7 @@ impl App {
             ads: AdSettings::load(base.join("ads.json"), show_ads),
             muted: crate::stores::Muted::load(base.join("muted.json")),
             last_ping: None,
+            gender_lookups: HashSet::new(),
             ad_drafts: AdDrafts::load(base.join("ad_drafts.json")),
             genders: GenderStore::load(chats_dir.join("genders.json")),
             own_status: OwnStatus::load(base.join("status.json")),
@@ -916,6 +923,17 @@ impl App {
     fn on_site_event(&mut self, data: &Value) {
         let kind = data.get("type").and_then(Value::as_str).unwrap_or("event");
         let name = data.get("name").and_then(Value::as_str).filter(|n| !n.is_empty());
+        let friend_news = match kind {
+            "friendrequest" => Some("Friend request from"),
+            "friendadd" => Some("New friend:"),
+            "friendremove" => Some("Friendship ended:"),
+            _ => None,
+        };
+        if let Some(news) = friend_news {
+            self.notify(format!("{news} {}", name.unwrap_or("?")), Severity::Information);
+            self.bell();
+            self.friends_call(crate::friends::Request::Load);
+        }
         if let (true, Some(name)) = (kind == "bookmarkadd" || kind == "bookmarkremove", name) {
             if kind == "bookmarkadd" {
                 self.presence.add_bookmark(name);
@@ -1239,9 +1257,16 @@ impl App {
         self.ping(&chat.id());
     }
 
-    /// The terminal bell for a new message, at most once a second.
+    /// The terminal bell for a new message, unless the chat is muted.
     fn ping(&mut self, chat_id: &str) {
-        if !self.config.ping || self.muted.contains(chat_id) {
+        if !self.muted.contains(chat_id) {
+            self.bell();
+        }
+    }
+
+    /// The terminal bell if `ping` is on, at most once a second.
+    fn bell(&mut self) {
+        if !self.config.ping {
             return;
         }
         if self.last_ping.is_some_and(|last| last.elapsed() < Duration::from_secs(1)) {
@@ -1462,6 +1487,136 @@ impl App {
                     return;
                 }
             }
+        }
+    }
+
+    pub fn show_friends(&mut self, search: &str) {
+        if self.screens.iter().any(|screen| matches!(screen, Screen::Friends(_))) {
+            return;
+        }
+        if self.config.account.is_empty() || self.config.password.is_empty() {
+            self.notify("Friends need the account and password of the chat login", Severity::Warning);
+            return;
+        }
+        self.screens.push(Screen::Friends(Box::new(crate::friends::FriendsScreen::new(&self.characters, &self.character, search))));
+        self.flush_friends();
+    }
+
+    fn friends_call(&mut self, request: crate::friends::Request) {
+        let ticket = self.ticket_is_fresh().then(|| self.ticket.clone());
+        crate::friends::spawn(self.tx.clone(), self.config.account.clone(), self.config.password.clone(), ticket, self.characters.clone(), request);
+    }
+
+    /// Starts the API calls the friends window asked for.
+    pub fn flush_friends(&mut self) {
+        let mut requests = Vec::new();
+        for screen in &mut self.screens {
+            if let Screen::Friends(friends) = screen {
+                requests.append(&mut friends.requests);
+            }
+        }
+        for request in requests {
+            self.friends_call(request);
+        }
+    }
+
+    pub fn on_friends_reply(&mut self, reply: crate::friends::Reply) {
+        match &reply {
+            crate::friends::Reply::Ticket(ticket) => {
+                self.ticket = ticket.clone();
+                self.ticket_time = Some(Instant::now());
+            }
+            crate::friends::Reply::Data(data) => {
+                self.bookmarks = data.bookmarks.clone();
+                self.presence.set_bookmarks(&self.bookmarks);
+                self.friend_pairs = Some(data.friends.iter().map(|friend| (friend.own.clone(), friend.other.clone())).collect());
+                let friends = self.account_friends().unwrap_or_default();
+                self.presence.set_friends(&friends);
+                let own = data.friends.iter().map(|friend| &friend.own).chain(data.incoming.iter().map(|request| &request.dest)).chain(data.outgoing.iter().map(|request| &request.source));
+                let unknown: Vec<String> = own.filter(|name| self.genders.get(name).is_none()).cloned().collect();
+                for name in unknown {
+                    self.look_up_gender(&name);
+                }
+            }
+            crate::friends::Reply::Done(text) => self.notify(text.clone(), Severity::Information),
+            crate::friends::Reply::Failed(error) => self.notify(error.clone(), Severity::Warning),
+        }
+        for screen in &mut self.screens {
+            if let Screen::Friends(friends) = screen {
+                friends.on_reply(reply);
+                break;
+            }
+        }
+        self.flush_friends();
+    }
+
+    /// Reads the gender of an own character from its profile, since offline characters send none.
+    fn look_up_gender(&mut self, name: &str) {
+        if !self.gender_lookups.insert(name.to_lowercase()) {
+            return;
+        }
+        let tx = self.tx.clone();
+        let name = name.to_string();
+        let account = self.config.account.clone();
+        let password = self.config.password.clone();
+        let cached = self.ticket_is_fresh().then(|| self.ticket.clone());
+        let mapping_file = paths::cache_dir().join("mapping-list.json");
+        tokio::spawn(async move {
+            let ticket = match cached {
+                Some(ticket) => ticket,
+                None => match fchat::fetch_ticket(&account, &password).await {
+                    Ok(login) => login.ticket,
+                    Err(_) => return,
+                },
+            };
+            let Ok(profile) = fchat::fetch_profile(&account, &ticket, &name, &mapping_file).await else { return };
+            let gender = profile.infotags.iter().flat_map(|(_, tags)| tags).find(|(label, _)| label.eq_ignore_ascii_case("gender")).map(|(_, value)| value.clone());
+            let _ = tx.send(AppEvent::Gender(name, gender));
+        });
+    }
+
+    pub fn on_gender(&mut self, name: &str, gender: Option<String>) {
+        if gender.is_some() {
+            self.genders.set(name, gender.as_deref());
+            self.genders.save();
+        }
+    }
+
+    pub fn toggle_bookmark(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let known = self.bookmarks.iter().any(|bookmark| bookmark.eq_ignore_ascii_case(name));
+        self.friends_call(crate::friends::Request::Bookmark(name.to_string(), !known));
+    }
+
+    pub fn friend_request(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() || self.is_me(name) {
+            return;
+        }
+        self.friends_call(crate::friends::Request::Send { source: self.character.clone(), dest: name.to_string() });
+    }
+
+    /// Ends a friendship; with several, the one of the active character comes first.
+    pub fn unfriend(&mut self, name: &str) {
+        let name = name.trim();
+        let pairs = self.friend_pairs.clone().unwrap_or_default();
+        let own: Vec<&String> = self.characters.iter().collect();
+        let is_own = |character: &str| own.iter().any(|own| own.eq_ignore_ascii_case(character));
+        let mut matches: Vec<(String, String)> = pairs
+            .into_iter()
+            .filter_map(|(a, b)| match (is_own(&a), is_own(&b)) {
+                (true, _) if b.eq_ignore_ascii_case(name) => Some((a, b)),
+                (_, true) if a.eq_ignore_ascii_case(name) => Some((b, a)),
+                _ => None,
+            })
+            .collect();
+        matches.sort_by_key(|(character, _)| !character.eq_ignore_ascii_case(&self.character));
+        match matches.into_iter().next() {
+            Some((own, other)) => self.friends_call(crate::friends::Request::Remove { own, other }),
+            None => self.warn(format!("{name} is not a friend of your characters")),
         }
     }
 

@@ -35,6 +35,13 @@ pub enum Action {
     ResetTab(Tab),
     /// Opens or copies a link, e.g. "o" on a profile.
     OpenLink(String),
+    /// Opens the private chat with a character.
+    Private(String),
+    Profile(String),
+    /// Sets or removes the bookmark of a character.
+    Bookmark(String),
+    /// A friend request from the active character.
+    FriendRequest(String),
 }
 
 pub enum Screen {
@@ -46,6 +53,7 @@ pub enum Screen {
     Edit(EditScreen),
     Settings(SettingsScreen),
     Notes(Box<crate::notes::NotesScreen>),
+    Friends(Box<crate::friends::FriendsScreen>),
 }
 
 impl Screen {
@@ -59,6 +67,7 @@ impl Screen {
             Screen::Edit(screen) => screen.on_key(key),
             Screen::Settings(screen) => screen.on_key(key),
             Screen::Notes(screen) => screen.on_key(key),
+            Screen::Friends(screen) => screen.on_key(key),
         }
     }
 
@@ -74,6 +83,7 @@ impl Screen {
             Screen::Character(screen) => screen.move_selection(rows),
             Screen::Settings(screen) if screen.edit.is_none() => screen.move_selection(rows),
             Screen::Notes(screen) => screen.scroll(rows),
+            Screen::Friends(screen) if screen.compose.is_none() => screen.move_selection(rows),
             _ => {}
         }
     }
@@ -255,6 +265,8 @@ impl ProfileScreen {
             KeyCode::Left | KeyCode::BackTab => self.step_tab(-1),
             KeyCode::Right | KeyCode::Tab => self.step_tab(1),
             KeyCode::Char('o') => return Action::OpenLink(crate::bbcode::profile_url(&self.character)),
+            KeyCode::Char('b') => return Action::Bookmark(self.character.clone()),
+            KeyCode::Char('f') => return Action::FriendRequest(self.character.clone()),
             KeyCode::Esc | KeyCode::Char('q') => return Action::Close,
             _ => {}
         }

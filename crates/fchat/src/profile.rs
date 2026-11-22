@@ -156,7 +156,7 @@ pub fn build_profile(data: &Value, mapping: &Value) -> Profile {
     }
 }
 
-async fn request(endpoint: &str, form: &[(&str, &str)]) -> Result<Value> {
+pub(crate) async fn request(endpoint: &str, form: &[(&str, &str)]) -> Result<Value> {
     let client = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .build()

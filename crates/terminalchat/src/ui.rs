@@ -772,6 +772,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
         }
         Screen::Settings(settings) => cursor = draw_settings(frame, area, settings),
         Screen::Notes(notes) => cursor = crate::notes_view::draw(frame, app, area, notes),
+        Screen::Friends(friends) => cursor = crate::friends_view::draw(frame, app, area, friends),
     }
     if let Some((x, y)) = cursor {
         frame.set_cursor_position((x, y));
@@ -1384,7 +1385,7 @@ fn draw_profile(frame: &mut Frame, app: &mut App, area: Rect, screen: &mut Profi
         _ => Vec::new(),
     };
     draw_rows(frame, app, content, &rows, screen.scroll_mut());
-    footer(frame, outer, "o: copy profile link, left/right: tabs, up/down: scroll, esc: close, click names and links");
+    footer(frame, outer, "o: copy profile link, b: bookmark, f: friend request, left/right: tabs, up/down: scroll, esc: close, click names and links");
 }
 
 #[cfg(test)]

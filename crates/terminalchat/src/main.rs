@@ -8,6 +8,8 @@ mod images;
 mod input;
 mod notes;
 mod notes_view;
+mod friends;
+mod friends_view;
 mod pager;
 mod paths;
 mod presence;
@@ -125,6 +127,8 @@ fn handle(app: &mut App, event: AppEvent) {
         AppEvent::Connected(generation, result) => app.on_connected(generation, result),
         AppEvent::Profile(name, result) => app.on_profile(&name, result),
         AppEvent::Notes(reply) => app.on_notes(reply),
+        AppEvent::Friends(reply) => app.on_friends_reply(reply),
+        AppEvent::Gender(name, gender) => app.on_gender(&name, gender),
         AppEvent::Image(key, frames) => app.images.on_loaded(key, frames),
         AppEvent::Attached(attached, left, top) => {
             app.images.attached = attached;

@@ -22,6 +22,7 @@ pub fn handle(app: &mut App, event: Event) {
         _ => {}
     }
     app.flush_notes();
+    app.flush_friends();
 }
 
 fn paste(app: &mut App, text: &str) {
@@ -31,6 +32,7 @@ fn paste(app: &mut App, text: &str) {
         Some(Screen::Edit(edit)) => edit.insert(&text.replace('\n', " ")),
         Some(Screen::Settings(settings)) => settings.paste(&text.replace('\n', " ")),
         Some(Screen::Notes(notes)) => notes.paste(&text),
+        Some(Screen::Friends(friends)) => friends.paste(&text),
         Some(Screen::Login(login)) => match login.focus {
             0 => login.account.push_str(text.trim()),
             1 => login.password.push_str(text.trim()),
@@ -280,6 +282,13 @@ fn apply_action(app: &mut App, action: Action) {
             settings_done(app, result);
         }
         Action::OpenLink(url) => app.open_link(&url, None),
+        Action::Private(name) => {
+            app.screens.clear();
+            app.open_private(&name);
+        }
+        Action::Profile(name) => app.show_profile(&name),
+        Action::Bookmark(name) => app.toggle_bookmark(&name),
+        Action::FriendRequest(name) => app.friend_request(&name),
     }
 }
 
@@ -345,6 +354,11 @@ fn on_click(app: &mut App, column: u16, row: u16) {
     }
     if let Some(Screen::Notes(notes)) = app.screens.last_mut() {
         notes.click(column, row);
+    }
+    if let Some(Screen::Friends(friends)) = app.screens.last_mut() {
+        let action = friends.click(column, row);
+        apply_action(app, action);
+        return;
     }
     if let Some(Screen::Profile(profile)) = app.screens.last_mut() {
         if profile.click_tab(column, row) {

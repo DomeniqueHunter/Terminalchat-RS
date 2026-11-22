@@ -44,6 +44,10 @@ pub const COMMAND_INFO: &[(&str, &str, &str)] = &[
     ("pins", "", "show pinned chats"),
     ("ads", "[on|off]", "show or hide ads in the current channel"),
     ("gif", "[on|off]", "animate GIF eicons on or off"),
+    ("friends", "[name]", "friends, friend requests and bookmarks of all your characters, optionally searched"),
+    ("bookmark", "[name]", "set or remove the bookmark of a character (default: the private chat partner)"),
+    ("friend", "[name]", "send a friend request from the active character"),
+    ("unfriend", "[name]", "end a friendship with a character"),
     ("mute", "[chat]", "switch the message ping off or on again for the current or a named chat"),
     ("muteall", "", "switch the ping off for all open chats; again: on for all"),
     ("settings", "", "change settings and colors"),
@@ -264,6 +268,8 @@ impl App {
             "ads" => self.cmd_ads(args),
             "gif" => self.cmd_gif(args),
             "mute" => self.cmd_mute(args),
+            "friends" => self.show_friends(&unquote(args)),
+            "bookmark" | "friend" | "unfriend" => self.cmd_friend(&name, &unquote(args)),
             "muteall" => self.cmd_muteall(),
             "settings" => self.screens.push(Screen::Settings(SettingsScreen::new(&self.config))),
             "note" => self.show_notes(),
@@ -478,6 +484,30 @@ impl App {
     fn image_info(&self) -> String {
         let (width, height) = self.images.font();
         format!("images: {}, cell {width}x{height} px", self.images.protocol_name())
+    }
+
+    /// The named character, else the partner of the open private chat.
+    fn target_name(&mut self, args: &str, command: &str) -> Option<String> {
+        let name = args.trim();
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+        match self.current_chat() {
+            Some(chat) if chat.kind == USER => Some(chat.key.clone()),
+            _ => {
+                self.warn(format!("Usage: /{command} <name>, or in a private chat"));
+                None
+            }
+        }
+    }
+
+    fn cmd_friend(&mut self, command: &str, args: &str) {
+        let Some(name) = self.target_name(args, command) else { return };
+        match command {
+            "bookmark" => self.toggle_bookmark(&name),
+            "friend" => self.friend_request(&name),
+            _ => self.unfriend(&name),
+        }
     }
 
     fn ping_note(&self) -> &'static str {
