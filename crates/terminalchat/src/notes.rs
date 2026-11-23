@@ -414,6 +414,9 @@ impl NotesScreen {
             return Action::None;
         }
         if self.compose.is_some() {
+            if key.code == KeyCode::Char('e') && is_ctrl(&key) && self.compose.as_ref().is_some_and(|c| c.field != Field::From && !c.sending) {
+                return Action::OpenPicker(crate::screens::PickerKind::Emoji);
+            }
             self.compose_key(key);
             return Action::None;
         }
@@ -532,7 +535,6 @@ impl NotesScreen {
                     KeyCode::End => input.end(),
                     KeyCode::Char('u') if is_ctrl(&key) => input.set_text(""),
                     KeyCode::Char('a') if is_ctrl(&key) => input.home(),
-                    KeyCode::Char('e') if is_ctrl(&key) => input.end(),
                     KeyCode::Char(c) if !is_ctrl(&key) => input.insert_char(c),
                     _ => {}
                 }

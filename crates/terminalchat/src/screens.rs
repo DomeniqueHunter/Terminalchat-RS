@@ -42,6 +42,8 @@ pub enum Action {
     Bookmark(String),
     /// A friend request from the active character.
     FriendRequest(String),
+    /// Opens a picker (ctrl+e: emoji) whose choice goes into the window below it.
+    OpenPicker(PickerKind),
 }
 
 pub enum Screen {
@@ -467,7 +469,7 @@ impl EditScreen {
             }
             KeyCode::Char('u') if is_ctrl(&key) => self.input.set_text(""),
             KeyCode::Char('a') if is_ctrl(&key) => self.input.home(),
-            KeyCode::Char('e') if is_ctrl(&key) => self.input.end(),
+            KeyCode::Char('e') if is_ctrl(&key) => return Action::OpenPicker(PickerKind::Emoji),
             KeyCode::Char(c) if !is_ctrl(&key) => self.insert(&c.to_string()),
             _ => {}
         }

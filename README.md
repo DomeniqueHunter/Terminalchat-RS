@@ -101,7 +101,7 @@ Commands: `/bookmark [name]` sets or removes a bookmark, `/friend [name]` sends 
 
 - Tabs **Inbox** and **Sent** (left/right, tab or a click), each with From and To, so you see to which of your characters a note went. More notes load when the selection reaches the end; `f5` reloads.
 - `enter` or a second click reads a note (BBCode, links clickable), `esc` goes back.
-- `r` answers: the sender is the character that got the note, the recipient the one who wrote it, the title `Re: ...`. `n` writes a new note, sent by the chat character. In the draft `tab` walks the fields, left/right in *From* picks any character of the account, `ctrl+j` (or `ctrl+enter`) is a new line, `enter` in the message sends, `esc` cancels (asks first if there is text).
+- `r` answers: the sender is the character that got the note, the recipient the one who wrote it, the title `Re: ...`. `n` writes a new note, sent by the chat character. In the draft `tab` walks the fields, left/right in *From* picks any character of the account, `ctrl+j` (or `ctrl+enter`) is a new line, `ctrl+e` opens the emoji picker (also in the status editor), `enter` in the message sends, `esc` cancels (asks first if there is text).
 - `d` moves a note to the trash after a confirmation (`y`).
 
 There is no API for notes; the client logs in on the website with the account and password of the chat (kept in memory only, no cookies on disk) and uses the same calls as the website. If F-List changes the website, this may break.

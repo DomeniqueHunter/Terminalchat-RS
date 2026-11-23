@@ -88,7 +88,7 @@ pub enum Focus {
     Sidebar,
 }
 
-/// A mouse selection in the chat view, in screen coordinates (column, row).
+/// A mouse selection in the chat view or in the text of a window, in screen coordinates (column, row).
 #[derive(Clone, Copy, Debug)]
 pub struct Selection {
     pub start: (u16, u16),
@@ -131,6 +131,9 @@ pub struct Regions {
     pub chat: Rect,
     /// Plain text of the chat rows on screen, from the top of `chat`.
     pub chat_text: Vec<String>,
+    /// A window with selectable text (e.g. a note) and its rows as drawn; empty if none.
+    pub modal_text_area: Rect,
+    pub modal_text: Vec<String>,
     pub title: Rect,
 }
 
@@ -313,14 +316,23 @@ impl App {
         self.osc_queue.push(format!("\x1b]52;c;{encoded}\x07"));
     }
 
+    /// Where text can be selected: the text of the open window, else the chat.
+    pub fn selection_area(&self) -> (Rect, &[String]) {
+        if self.screens.is_empty() {
+            (self.regions.chat, &self.regions.chat_text)
+        } else {
+            (self.regions.modal_text_area, &self.regions.modal_text)
+        }
+    }
+
     /// The text under the mouse selection.
     pub fn selected_text(&self) -> String {
         let Some(selection) = &self.selection else { return String::new() };
         let ((c0, r0), (c1, r1)) = selection.ordered();
-        let area = self.regions.chat;
+        let (area, rows) = self.selection_area();
         let mut lines = Vec::new();
         for y in r0..=r1 {
-            let Some(line) = self.regions.chat_text.get(y.saturating_sub(area.y) as usize) else { continue };
+            let Some(line) = rows.get(y.saturating_sub(area.y) as usize) else { continue };
             let from = if y == r0 { c0.saturating_sub(area.x) } else { 0 } as usize;
             let to = if y == r1 { c1.saturating_sub(area.x) as usize } else { usize::MAX };
             let mut column = 0usize;

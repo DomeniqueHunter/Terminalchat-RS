@@ -310,6 +310,40 @@ pub fn html_to_bbcode(html: &str) -> String {
     out.trim().to_string()
 }
 
+/// The names of the characters 160 to 255 (Latin-1), in order.
+const LATIN1: [&str; 96] = [
+    "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf", "laquo", "not", "shy", "reg", "macr",
+    "deg", "plusmn", "sup2", "sup3", "acute", "micro", "para", "middot", "cedil", "sup1", "ordm", "raquo", "frac14", "frac12", "frac34", "iquest",
+    "Agrave", "Aacute", "Acirc", "Atilde", "Auml", "Aring", "AElig", "Ccedil", "Egrave", "Eacute", "Ecirc", "Euml", "Igrave", "Iacute", "Icirc", "Iuml",
+    "ETH", "Ntilde", "Ograve", "Oacute", "Ocirc", "Otilde", "Ouml", "times", "Oslash", "Ugrave", "Uacute", "Ucirc", "Uuml", "Yacute", "THORN", "szlig",
+    "agrave", "aacute", "acirc", "atilde", "auml", "aring", "aelig", "ccedil", "egrave", "eacute", "ecirc", "euml", "igrave", "iacute", "icirc", "iuml",
+    "eth", "ntilde", "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc", "uuml", "yacute", "thorn", "yuml",
+];
+
+/// Named HTML entities beyond the basic five: Latin-1 (umlauts, accents) and common punctuation.
+fn named_entity(name: &str) -> Option<char> {
+    if let Some(index) = LATIN1.iter().position(|entity| *entity == name) {
+        return char::from_u32(160 + index as u32);
+    }
+    Some(match name {
+        "euro" => '\u{20ac}',
+        "hellip" => '\u{2026}',
+        "ndash" => '\u{2013}',
+        "mdash" => '\u{2014}',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "sbquo" => '\u{201a}',
+        "ldquo" => '\u{201c}',
+        "rdquo" => '\u{201d}',
+        "bdquo" => '\u{201e}',
+        "bull" => '\u{2022}',
+        "trade" => '\u{2122}',
+        "dagger" => '\u{2020}',
+        "hearts" => '\u{2665}',
+        _ => return None,
+    })
+}
+
 pub fn decode_entities(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -331,7 +365,7 @@ pub fn decode_entities(text: &str) -> String {
             "nbsp" => Some(' '),
             _ if entity.starts_with("#x") || entity.starts_with("#X") => u32::from_str_radix(&entity[2..], 16).ok().and_then(char::from_u32),
             _ if entity.starts_with('#') => entity[1..].parse().ok().and_then(char::from_u32),
-            _ => None,
+            _ => named_entity(entity),
         };
         match decoded {
             Some(c) => {
@@ -390,6 +424,12 @@ mod tests {
         assert_eq!(notes[1].id, 12);
         assert!(check(&serde_json::json!({"error": "Not logged in"})).is_err());
         assert!(check(&serde_json::json!({"error": ""})).is_ok());
+    }
+
+
+    #[test]
+    fn named_entities_like_umlauts_are_decoded() {
+        assert_eq!(decode_entities("w&uuml;rde &Auml;rger, Stra&szlig;e &euro;5 &hellip; &frac12; &bogus; &"), "würde Ärger, Straße €5 … ½ &bogus; &");
     }
 
 

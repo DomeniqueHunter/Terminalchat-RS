@@ -83,7 +83,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, screen: &mut NotesScre
     let hint = if screen.compose.is_some() {
         let NotesScreen { compose, characters, hits, .. } = screen;
         cursor = draw_compose(frame, app, content, compose.as_mut().unwrap(), characters, hits);
-        "tab: next field, left/right: sender, enter: send (in the message), ctrl+j: new line, esc: cancel"
+        "tab: next field, left/right: sender, enter: send (in the message), ctrl+j: new line, ctrl+e: emoji, esc: cancel"
     } else if let Some(reading) = screen.reading.as_mut() {
         draw_reading(frame, app, content, reading);
         "r: reply, d: trash, up/down: scroll, esc: back, click links"
@@ -160,6 +160,7 @@ fn draw_reading(frame: &mut Frame, app: &mut App, area: Rect, reading: &mut Read
     let width = area.width as usize;
     let lines: Vec<Vec<Seg>> = lines.iter().flat_map(|line| wrap(line, width)).collect();
     draw_lines(frame, app, area, &lines, &mut reading.scroll);
+    crate::ui::selectable(frame, app, area);
 }
 
 /// One input row: the end of the text stays visible while typing.

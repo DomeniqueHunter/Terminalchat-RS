@@ -248,7 +248,11 @@ fn apply_action(app: &mut App, action: Action) {
         Action::Pick(kind, value) => {
             app.screens.pop();
             match kind {
-                PickerKind::Emoji => app.input.insert_str(&value),
+                PickerKind::Emoji => match app.screens.last_mut() {
+                    Some(Screen::Notes(notes)) => notes.paste(&value),
+                    Some(Screen::Edit(edit)) => edit.insert(&value),
+                    _ => app.input.insert_str(&value),
+                },
                 PickerKind::Bbcode => app.input.insert_template(&value),
                 PickerKind::Channels => app.join(&value, true),
                 PickerKind::Commands => app.input.set_text(&value),
@@ -289,6 +293,7 @@ fn apply_action(app: &mut App, action: Action) {
         Action::Profile(name) => app.show_profile(&name),
         Action::Bookmark(name) => app.toggle_bookmark(&name),
         Action::FriendRequest(name) => app.friend_request(&name),
+        Action::OpenPicker(kind) => app.open_picker(kind, ""),
     }
 }
 
@@ -314,7 +319,7 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Down(MouseButton::Left) => {
             app.selection = None;
             app.press = None;
-            if app.screens.is_empty() && contains(&app.regions.chat, column, row) {
+            if contains(&app.selection_area().0, column, row) {
                 app.press = Some((column, row));
             } else {
                 on_click(app, column, row);
@@ -322,7 +327,7 @@ fn on_mouse(app: &mut App, mouse: MouseEvent) {
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(start) = app.press {
-                let area = app.regions.chat;
+                let area = app.selection_area().0;
                 let column = column.clamp(area.x, area.x + area.width.saturating_sub(1));
                 let row = row.clamp(area.y, area.y + area.height.saturating_sub(1));
                 app.selection = ((column, row) != start).then_some(Selection { start, end: (column, row) });
@@ -429,6 +434,41 @@ mod tests {
         assert_eq!(app.selected_text(), "world\nsecond");
         app.selection = Some(Selection { start: (15, 3), end: (16, 2) });
         assert_eq!(app.selected_text(), "world\nsecond");
+    }
+
+    #[test]
+    fn a_drag_in_the_text_of_a_note_selects_and_copies_it() {
+        let mut app = app();
+        app.screens.push(Screen::Notes(Box::new(crate::notes::NotesScreen::new("Bo"))));
+        app.regions.modal_text_area = Rect { x: 5, y: 10, width: 30, height: 2 };
+        app.regions.modal_text = vec!["Hallo, wie geht's?".into(), "Bis bald".into()];
+        let mouse = |kind, column, row| MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE };
+        on_mouse(&mut app, mouse(MouseEventKind::Down(MouseButton::Left), 12, 10));
+        on_mouse(&mut app, mouse(MouseEventKind::Drag(MouseButton::Left), 7, 11));
+        assert_eq!(app.selected_text(), "wie geht's?\nBis");
+        on_mouse(&mut app, mouse(MouseEventKind::Up(MouseButton::Left), 7, 11));
+        assert_eq!(app.clipboard, "wie geht's?\nBis");
+    }
+
+    #[test]
+    fn the_emoji_picker_writes_into_the_note_draft_and_the_status_editor() {
+        let mut app = app();
+        let mut notes = crate::notes::NotesScreen::new("Bo");
+        notes.on_reply(crate::notes::Reply::Characters(vec!["Bo".into()]));
+        notes.compose_new("Zed");
+        app.screens.push(Screen::Notes(Box::new(notes)));
+        on_key(&mut app, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        assert!(matches!(app.screens.last(), Some(Screen::Picker(_))));
+        apply_action(&mut app, Action::Pick(PickerKind::Emoji, "\u{2665}".into()));
+        let Some(Screen::Notes(notes)) = app.screens.last() else { panic!("notes window gone") };
+        assert_eq!(notes.compose.as_ref().unwrap().title.text(), "\u{2665}");
+
+        app.screens.clear();
+        app.screens.push(Screen::Edit(crate::screens::EditScreen::new("Status", "hi ", 50)));
+        on_key(&mut app, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+        apply_action(&mut app, Action::Pick(PickerKind::Emoji, "\u{2605}".into()));
+        let Some(Screen::Edit(edit)) = app.screens.last() else { panic!("editor gone") };
+        assert_eq!(edit.input.text(), "hi \u{2605}");
     }
 
     #[test]

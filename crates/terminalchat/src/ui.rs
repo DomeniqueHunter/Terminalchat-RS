@@ -36,10 +36,21 @@ pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
     rect(area.x + (area.width - width) / 2, area.y + (area.height - height) / 2, width, height)
 }
 
+/// Makes the text drawn in `area` selectable with the mouse, read back from the screen.
+pub(crate) fn selectable(frame: &mut Frame, app: &mut App, area: Rect) {
+    let buffer = frame.buffer_mut();
+    app.regions.modal_text = (area.y..area.y + area.height)
+        .map(|y| (area.x..area.x + area.width).filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_string())).collect::<String>().trim_end().to_string())
+        .collect();
+    app.regions.modal_text_area = area;
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.regions.links.clear();
     app.regions.modal_links.clear();
+    app.regions.modal_text_area = Rect::default();
+    app.regions.modal_text.clear();
     app.regions.chats.clear();
     app.regions.names.clear();
     app.regions.modes.clear();
@@ -73,7 +84,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_chat_list(frame, app, list_area);
     }
     draw_chat(frame, app, chat_area);
-    highlight_selection(frame, app);
     if sidebar_width > 0 {
         draw_sidebar(frame, app, sidebar_area);
     }
@@ -90,6 +100,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let (Some(position), Focus::Input) = (input_cursor, app.focus) {
         frame.set_cursor_position(position);
     }
+    highlight_selection(frame, app);
     app.images.end_frame();
     app.images.draw_erased(frame);
     crate::colors::apply_background(frame.buffer_mut());
@@ -482,7 +493,7 @@ fn draw_mode_row(frame: &mut Frame, app: &mut App, area: Rect) {
 fn highlight_selection(frame: &mut Frame, app: &App) {
     let Some(selection) = &app.selection else { return };
     let ((c0, r0), (c1, r1)) = selection.ordered();
-    let area = app.regions.chat;
+    let area = app.selection_area().0;
     let last_column = area.x + area.width.saturating_sub(1);
     let buffer = frame.buffer_mut();
     for y in r0..=r1 {
@@ -768,7 +779,7 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             let count = format!("{}/{}", edit.input.char_count(), edit.max);
             frame.render_widget(Paragraph::new(Span::styled(count, dim())), rect(inner.x + 1, inner.y + 1 + lines.len() as u16, inner.width.saturating_sub(2), 1));
             cursor = Some((inner.x + 1 + cursor_at.1 as u16, inner.y + 1 + cursor_at.0 as u16));
-            footer(frame, outer, "enter: save, ctrl+enter / ctrl+j: new line, esc: cancel, ctrl+u: clear");
+            footer(frame, outer, "enter: save, ctrl+enter / ctrl+j: new line, ctrl+e: emoji, esc: cancel, ctrl+u: clear");
         }
         Screen::Settings(settings) => cursor = draw_settings(frame, area, settings),
         Screen::Notes(notes) => cursor = crate::notes_view::draw(frame, app, area, notes),
