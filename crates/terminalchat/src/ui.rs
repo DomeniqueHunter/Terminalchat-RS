@@ -156,21 +156,40 @@ fn draw_chat_list(frame: &mut Frame, app: &mut App, area: Rect) {
         let pinned = if app.pins.is_pinned(chat.kind, &chat.key) { "\u{2022}" } else { " " };
         let mut label = format!("{pinned}{prefix}{}", html_unescape(&chat.title));
         let max = inner.width as usize;
-        while text_width(&label) > max.saturating_sub(2) {
+        let selected = app.active_chat.as_deref() == Some(id.as_str());
+        // private chats: a filled circle in the status color when online, an empty one when not
+        let presence = (chat.kind == USER).then(|| match app.presence.status_of(&chat.key) {
+            Some((status, _)) => (" \u{25cf}", status_style(&status)),
+            None => (" \u{25cb}", dim()),
+        });
+        let unread = if chat.unread { " \u{25cf}" } else { "" };
+        let reserved = presence.map_or(0, |(mark, _)| text_width(mark)) + text_width(unread);
+        while text_width(&label) > max.saturating_sub(2 + reserved) {
             label.pop();
         }
         let mut style = if chat.kind == USER { app.name_style(&chat.key) } else { Style::default() };
         if chat.unread {
             style = style.patch(bold());
-            label.push_str(" \u{25cf}");
         }
-        if app.active_chat.as_deref() == Some(id.as_str()) {
-            style = style.patch(reversed());
-            let pad = max.saturating_sub(text_width(&label));
-            label.push_str(&" ".repeat(pad));
+        let selection = if selected { reversed() } else { Style::default() };
+        let mut spans = vec![Span::styled(label.clone(), style.patch(selection))];
+        if let Some((mark, mark_style)) = presence {
+            // In the selected row the circle keeps its color on the row's background (the name
+            // color, since the row is reversed) instead of being reversed itself.
+            let circle = mark.trim_start();
+            let mark_style = if selected { mark_style.bg(style.fg.unwrap_or(ratatui::style::Color::Gray)) } else { mark_style };
+            spans.push(Span::styled(" ", style.patch(selection)));
+            spans.push(Span::styled(circle, mark_style));
+        }
+        if !unread.is_empty() {
+            spans.push(Span::styled(unread, style.patch(selection)));
+        }
+        if selected {
+            let pad = max.saturating_sub(text_width(&label) + reserved);
+            spans.push(Span::styled(" ".repeat(pad), style.patch(selection)));
         }
         app.regions.chats.push((rect(inner.x, inner.y + (row - start) as u16, inner.width, 1), id.clone()));
-        lines.push(Line::from(Span::styled(label, style)));
+        lines.push(Line::from(spans));
     }
     let border = if app.focus == Focus::List { color("focus") } else { dim() };
     let block = Block::default().borders(Borders::RIGHT).border_style(border);
@@ -1413,6 +1432,22 @@ mod tests {
         let mut app = App::new(Config::default(), tx);
         app.input.set_text(text);
         app
+    }
+
+    #[test]
+    fn private_chats_show_who_is_online_after_the_name() {
+        let mut app = app_with_input("");
+        app.store.get_or_create("Zed", USER, None);
+        app.store.get_or_create("Xi", USER, None);
+        app.presence.set_online("Zed", "busy", "");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 4)).unwrap();
+        terminal.draw(|frame| draw_chat_list(frame, &mut app, frame.area())).unwrap();
+        let rows: Vec<String> = (0..4).map(|y| (0..20).map(|x| terminal.backend().buffer()[(x, y)].symbol().to_string()).collect::<String>()).collect();
+        assert!(rows.iter().any(|row| row.contains("@Zed \u{25cf}")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("@Xi \u{25cb}")), "{rows:?}");
+        let zed = rows.iter().position(|row| row.contains("@Zed")).unwrap() as u16;
+        let dot = terminal.backend().buffer()[(6, zed)].style().fg;
+        assert_eq!(dot, status_style("busy").fg);
     }
 
     #[test]
