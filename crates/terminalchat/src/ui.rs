@@ -978,6 +978,12 @@ fn draw_settings(frame: &mut Frame, area: Rect, settings: &mut SettingsScreen) -
         Some(SettingsEdit::Color(_)) => "tab/up/down: part, left/right or click: choose, space: toggle, enter: save, esc: cancel",
     };
     footer(frame, outer, hint);
+    let version = format!(" terminalchat {} ", env!("CARGO_PKG_VERSION"));
+    let width = text_width(&version) as u16;
+    // on the top border, right; the bottom one is full of key hints
+    if outer.width > width + 16 {
+        frame.render_widget(Paragraph::new(Span::styled(version, dim())), rect(outer.x + outer.width - width - 2, outer.y, width, 1));
+    }
     cursor
 }
 
@@ -1448,6 +1454,18 @@ mod tests {
         let zed = rows.iter().position(|row| row.contains("@Zed")).unwrap() as u16;
         let dot = terminal.backend().buffer()[(6, zed)].style().fg;
         assert_eq!(dot, status_style("busy").fg);
+    }
+
+    #[test]
+    fn the_settings_page_shows_the_version() {
+        let mut settings = SettingsScreen::new(&Config::default());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(220, 30)).unwrap();
+        terminal.draw(|frame| {
+            draw_settings(frame, frame.area(), &mut settings);
+        })
+        .unwrap();
+        let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+        assert!(shown.contains(&format!("terminalchat {}", env!("CARGO_PKG_VERSION"))));
     }
 
     #[test]
