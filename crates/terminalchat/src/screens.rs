@@ -23,7 +23,11 @@ pub enum PickerKind {
 pub enum Action {
     None,
     Close,
-    Login { account: String, password: String, remember: bool },
+    Login { account: String, password: String, storage: String, master: String },
+    /// The master password, to open the stored F-List password.
+    Unlock(String),
+    /// A new master password for the stored F-List password.
+    SetMaster(String),
     Character(String),
     Pick(PickerKind, String),
     Edit(String),
@@ -102,25 +106,126 @@ pub fn text_lines(text: &str, style: Style) -> Vec<Vec<Seg>> {
 
 // ------------------------------------------------------------------ login
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginMode {
+    /// Account, F-List password and where to keep it.
+    Login,
+    /// Only the master password, to open the stored F-List password.
+    Unlock,
+    /// A new master password (chosen in the settings).
+    SetMaster,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginField {
+    Account,
+    Password,
+    Storage,
+    Master,
+    Repeat,
+}
+
 pub struct LoginScreen {
+    pub mode: LoginMode,
     pub account: String,
     pub password: String,
-    pub remember: bool,
-    pub focus: usize,
+    /// The storage methods offered (systemstore only when a password manager is there).
+    pub methods: Vec<&'static str>,
+    pub storage: usize,
+    pub master: String,
+    pub repeat: String,
+    pub focus: LoginField,
     pub message: String,
     pub busy: bool,
 }
 
 impl LoginScreen {
-    pub fn new(account: &str, remember: bool, message: &str) -> LoginScreen {
+    pub fn new(account: &str, methods: Vec<&'static str>, storage: &str, message: &str) -> LoginScreen {
+        let storage = methods.iter().position(|method| *method == storage).unwrap_or(0);
         LoginScreen {
+            mode: LoginMode::Login,
             account: account.to_string(),
             password: String::new(),
-            remember,
-            focus: if account.is_empty() { 0 } else { 1 },
+            methods,
+            storage,
+            master: String::new(),
+            repeat: String::new(),
+            focus: if account.is_empty() { LoginField::Account } else { LoginField::Password },
             message: message.to_string(),
             busy: false,
         }
+    }
+
+    pub fn with_mode(mut self, mode: LoginMode) -> LoginScreen {
+        self.mode = mode;
+        self.focus = if mode == LoginMode::Login { self.focus } else { LoginField::Master };
+        self
+    }
+
+    pub fn method(&self) -> &'static str {
+        self.methods.get(self.storage).copied().unwrap_or(crate::secrets::ONETIME)
+    }
+
+    /// The fields of the current mode, top to bottom.
+    pub fn fields(&self) -> Vec<LoginField> {
+        match self.mode {
+            LoginMode::Unlock => vec![LoginField::Master],
+            LoginMode::SetMaster => vec![LoginField::Master, LoginField::Repeat],
+            LoginMode::Login if self.method() == crate::secrets::MASTERPASS => {
+                vec![LoginField::Account, LoginField::Password, LoginField::Storage, LoginField::Master, LoginField::Repeat]
+            }
+            LoginMode::Login => vec![LoginField::Account, LoginField::Password, LoginField::Storage],
+        }
+    }
+
+    fn step(&mut self, step: isize) {
+        let fields = self.fields();
+        let position = fields.iter().position(|field| *field == self.focus).unwrap_or(0) as isize;
+        self.focus = fields[(position + step).rem_euclid(fields.len() as isize) as usize];
+    }
+
+    pub fn text_mut(&mut self) -> Option<&mut String> {
+        match self.focus {
+            LoginField::Account => Some(&mut self.account),
+            LoginField::Password => Some(&mut self.password),
+            LoginField::Master => Some(&mut self.master),
+            LoginField::Repeat => Some(&mut self.repeat),
+            LoginField::Storage => None,
+        }
+    }
+
+    /// Every needed field has text (enter then sends instead of moving on).
+    fn complete(&self) -> bool {
+        let master = !self.master.is_empty() && !self.repeat.is_empty();
+        match self.mode {
+            LoginMode::Unlock => !self.master.is_empty(),
+            LoginMode::SetMaster => master,
+            LoginMode::Login => !self.account.trim().is_empty() && !self.password.is_empty() && (self.method() != crate::secrets::MASTERPASS || master),
+        }
+    }
+
+    /// Checks the form; the action to run, or a message.
+    fn submit(&mut self) -> Result<Action, String> {
+        let new_master = self.mode == LoginMode::SetMaster || (self.mode == LoginMode::Login && self.method() == crate::secrets::MASTERPASS);
+        if self.mode == LoginMode::Login && (self.account.trim().is_empty() || self.password.is_empty()) {
+            return Err("Account and password are required".into());
+        }
+        if self.master.is_empty() && (new_master || self.mode == LoginMode::Unlock) {
+            return Err("Enter the master password".into());
+        }
+        if new_master && self.master != self.repeat {
+            return Err("The master passwords differ".into());
+        }
+        Ok(match self.mode {
+            LoginMode::Unlock => Action::Unlock(self.master.clone()),
+            LoginMode::SetMaster => Action::SetMaster(self.master.clone()),
+            LoginMode::Login => Action::Login {
+                account: self.account.trim().to_string(),
+                password: self.password.clone(),
+                storage: self.method().to_string(),
+                master: self.master.clone(),
+            },
+        })
     }
 
     fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -128,39 +233,45 @@ impl LoginScreen {
             return Action::None;
         }
         match key.code {
-            KeyCode::Tab | KeyCode::Down => self.focus = (self.focus + 1) % 3,
-            KeyCode::BackTab | KeyCode::Up => self.focus = (self.focus + 2) % 3,
+            KeyCode::Tab | KeyCode::Down => self.step(1),
+            KeyCode::BackTab | KeyCode::Up => self.step(-1),
+            KeyCode::Char('l') if is_ctrl(&key) && self.mode == LoginMode::Unlock => {
+                self.mode = LoginMode::Login;
+                self.focus = LoginField::Password;
+                self.master.clear();
+                self.message = "Log in with the F-List password; choose where to keep it".into();
+            }
+            KeyCode::Esc if self.mode == LoginMode::SetMaster => return Action::Close,
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.focus == LoginField::Storage => {
+                let count = self.methods.len().max(1);
+                self.storage = if key.code == KeyCode::Left { (self.storage + count - 1) % count } else { (self.storage + 1) % count };
+            }
             KeyCode::Enter => {
-                if self.focus == 0 && !self.account.trim().is_empty() && self.password.is_empty() {
-                    self.focus = 1;
+                let last = self.fields().last().copied();
+                if Some(self.focus) != last && !self.complete() {
+                    self.step(1);
                     self.message.clear();
                     return Action::None;
                 }
-                if self.account.trim().is_empty() || self.password.is_empty() {
-                    self.message = "Account and password are required".into();
-                    return Action::None;
+                match self.submit() {
+                    Ok(action) => {
+                        self.busy = true;
+                        self.message = if self.mode == LoginMode::Login { "Logging in...".into() } else { "Checking...".into() };
+                        return action;
+                    }
+                    Err(message) => self.message = message,
                 }
-                self.busy = true;
-                self.message = "Logging in...".into();
-                return Action::Login {
-                    account: self.account.trim().to_string(),
-                    password: self.password.clone(),
-                    remember: self.remember,
-                };
             }
             KeyCode::Backspace => {
-                match self.focus {
-                    0 => self.account.pop(),
-                    1 => self.password.pop(),
-                    _ => None,
-                };
+                if let Some(text) = self.text_mut() {
+                    text.pop();
+                }
             }
-            KeyCode::Char(' ') if self.focus == 2 => self.remember = !self.remember,
-            KeyCode::Char(c) if !is_ctrl(&key) => match self.focus {
-                0 => self.account.push(c),
-                1 => self.password.push(c),
-                _ => {}
-            },
+            KeyCode::Char(c) if !is_ctrl(&key) => {
+                if let Some(text) = self.text_mut() {
+                    text.push(c);
+                }
+            }
             _ => {}
         }
         Action::None
@@ -1000,13 +1111,39 @@ mod tests {
 
     #[test]
     fn enter_in_the_account_field_moves_on_to_the_password() {
-        let mut login = LoginScreen::new("", false, "");
+        let mut login = LoginScreen::new("", crate::secrets::METHODS.to_vec(), "onetime", "");
         for c in "me".chars() {
             login.on_key(KeyEvent::from(KeyCode::Char(c)));
         }
         assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::None));
-        assert_eq!((login.focus, login.message.as_str()), (1, ""));
+        assert_eq!((login.focus, login.message.as_str()), (LoginField::Password, ""));
         login.on_key(KeyEvent::from(KeyCode::Char('p')));
-        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::Login { .. }));
+        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::Login { storage, .. } if storage == "onetime"));
+    }
+
+    #[test]
+    fn a_master_password_is_asked_twice_and_must_match() {
+        let mut login = LoginScreen::new("me", crate::secrets::METHODS.to_vec(), "masterpass", "");
+        let typed = |login: &mut LoginScreen, text: &str| {
+            for c in text.chars() {
+                login.on_key(KeyEvent::from(KeyCode::Char(c)));
+            }
+        };
+        typed(&mut login, "pw");
+        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::None));
+        assert_eq!(login.focus, LoginField::Storage);
+        login.on_key(KeyEvent::from(KeyCode::Enter));
+        typed(&mut login, "m1");
+        login.on_key(KeyEvent::from(KeyCode::Enter));
+        typed(&mut login, "m2");
+        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::None));
+        assert_eq!(login.message, "The master passwords differ");
+        login.on_key(KeyEvent::from(KeyCode::Backspace));
+        typed(&mut login, "1");
+        assert!(matches!(login.on_key(KeyEvent::from(KeyCode::Enter)), Action::Login { storage, master, .. } if storage == "masterpass" && master == "m1"));
+
+        let mut unlock = LoginScreen::new("me", crate::secrets::METHODS.to_vec(), "masterpass", "").with_mode(LoginMode::Unlock);
+        typed(&mut unlock, "m1");
+        assert!(matches!(unlock.on_key(KeyEvent::from(KeyCode::Enter)), Action::Unlock(master) if master == "m1"));
     }
 }

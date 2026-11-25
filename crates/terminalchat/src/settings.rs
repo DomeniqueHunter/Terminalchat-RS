@@ -48,7 +48,7 @@ pub const SETTINGS: [Setting; 15] = [
     Setting { group: "Connection", key: "protocol", field: Field::Choice(&["wss://", "ws://"]), effect: Effect::Reconnect },
     Setting { group: "Connection", key: "endpoint", field: Field::Text, effect: Effect::Reconnect },
     Setting { group: "Start", key: "default_channels", field: Field::List, effect: Effect::Login },
-    Setting { group: "Start", key: "remember_password", field: Field::Bool, effect: Effect::Now },
+    Setting { group: "Start", key: "password_storage", field: Field::Choice(&crate::secrets::METHODS), effect: Effect::Now },
     Setting { group: "Display", key: "show_sidebar", field: Field::Bool, effect: Effect::Now },
     Setting { group: "Display", key: "show_ads", field: Field::Bool, effect: Effect::Now },
     Setting { group: "Display", key: "ping", field: Field::Bool, effect: Effect::Now },
@@ -74,7 +74,7 @@ pub fn value(config: &Config, key: &str) -> String {
         "protocol" => config.protocol.clone(),
         "endpoint" => config.endpoint.clone(),
         "default_channels" => config.default_channels.join(", "),
-        "remember_password" => config.remember_password.to_string(),
+        "password_storage" => config.storage().to_string(),
         "show_sidebar" => config.show_sidebar.to_string(),
         "show_ads" => config.show_ads.to_string(),
         "ping" => config.ping.to_string(),
@@ -113,7 +113,7 @@ pub fn apply(config: &mut Config, key: &str, text: &str) -> Result<(), String> {
         "default_channels" => {
             config.default_channels = text.split(',').map(str::trim).filter(|name| !name.is_empty()).map(String::from).collect();
         }
-        "remember_password" => config.remember_password = parse_bool(text)?,
+        "password_storage" => config.password_storage = text.to_string(),
         "show_sidebar" => config.show_sidebar = parse_bool(text)?,
         "show_ads" => config.show_ads = parse_bool(text)?,
         "ping" => config.ping = parse_bool(text)?,
@@ -185,7 +185,7 @@ mod tests {
             ("protocol", "ws://"),
             ("endpoint", "/chat3"),
             ("default_channels", "Frontpage, Helpdesk"),
-            ("remember_password", "false"),
+            ("password_storage", "onetime"),
             ("show_sidebar", "true"),
             ("show_ads", "false"),
             ("ping", "true"),
@@ -216,7 +216,7 @@ mod tests {
             ("eicon_max_age_hours", "-1"),
             ("cell_size", "8 by 18"),
             ("log_keep_days", "a week"),
-            ("remember_password", "maybe"),
+            ("password_storage", "cloud"),
             ("account", "someone"),
         ] {
             assert!(apply(&mut config, key, text).is_err(), "{key} = {text}");

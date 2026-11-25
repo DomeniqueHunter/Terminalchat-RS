@@ -33,11 +33,11 @@ fn paste(app: &mut App, text: &str) {
         Some(Screen::Settings(settings)) => settings.paste(&text.replace('\n', " ")),
         Some(Screen::Notes(notes)) => notes.paste(&text),
         Some(Screen::Friends(friends)) => friends.paste(&text),
-        Some(Screen::Login(login)) => match login.focus {
-            0 => login.account.push_str(text.trim()),
-            1 => login.password.push_str(text.trim()),
-            _ => {}
-        },
+        Some(Screen::Login(login)) => {
+            if let Some(field) = login.text_mut() {
+                field.push_str(text.trim());
+            }
+        }
         Some(_) => {}
         None => {
             app.focus = Focus::Input;
@@ -114,6 +114,11 @@ fn on_key(app: &mut App, key: KeyEvent) {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
         let text = app.clipboard.clone();
         paste(app, &text);
+        return;
+    }
+    // ctrl+q quits from everywhere, also from the login and unlock windows
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        app.should_quit = true;
         return;
     }
     if let Some(screen) = app.screens.last_mut() {
@@ -238,9 +243,11 @@ fn apply_action(app: &mut App, action: Action) {
                 app.on_character_chosen(None);
             }
         }
-        Action::Login { account, password, remember } => {
-            app.spawn_ticket(TicketPurpose::Login { account: account.clone(), password: password.clone(), remember }, account, password);
+        Action::Login { account, password, storage, master } => {
+            app.spawn_ticket(TicketPurpose::Login { account: account.clone(), password: password.clone(), storage, master }, account, password);
         }
+        Action::Unlock(master) => app.unlock(&master),
+        Action::SetMaster(master) => app.set_master(&master),
         Action::Character(name) => {
             app.screens.pop();
             app.on_character_chosen(Some(name));
@@ -299,7 +306,8 @@ fn apply_action(app: &mut App, action: Action) {
 
 fn settings_done(app: &mut App, result: Result<String, String>) {
     let App { screens, config, .. } = app;
-    if let Some(Screen::Settings(settings)) = screens.last_mut() {
+    // the settings page may lie below a window it opened (the master password)
+    if let Some(Screen::Settings(settings)) = screens.iter_mut().rev().find(|screen| matches!(screen, Screen::Settings(_))) {
         settings.done(result, config);
     }
 }

@@ -463,7 +463,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect, lines: Vec<String>, 
     };
     frame.render_widget(Paragraph::new(shown), inner);
     let x = inner.x + cursor.1 as u16;
-    let y = inner.y + (cursor.0 - first) as u16;
+    let y = inner.y + cursor.0.saturating_sub(first) as u16;
     (x < inner.x + inner.width && y < inner.y + inner.height).then_some((x, y))
 }
 
@@ -709,26 +709,56 @@ fn draw_screen(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
     let mut cursor = None;
     match &mut screen {
         Screen::Login(login) => {
-            let outer = centered(area, 54, 12);
-            let inner = modal(frame, outer, "Login");
-            let field = |label: &str, value: String, focused: bool| {
-                let style = if focused { reversed() } else { Style::default() };
-                Line::from(vec![Span::styled(format!("{label:<10}"), dim()), Span::styled(format!(" {value:<30} "), style)])
+            use crate::screens::{LoginField, LoginMode};
+            let fields = login.fields();
+            let outer = centered(area, 62, fields.len() as u16 + 10);
+            let title = match login.mode {
+                LoginMode::Login => "Login",
+                LoginMode::Unlock => "Unlock",
+                LoginMode::SetMaster => "Master password",
             };
-            let remember = format!("[{}] remember password", if login.remember { "x" } else { " " });
-            let lines = vec![
-                Line::default(),
-                field("Account", login.account.clone(), login.focus == 0),
-                field("Password", "*".repeat(login.password.chars().count()), login.focus == 1),
-                Line::from(vec![Span::raw("           "), Span::styled(remember, if login.focus == 2 { reversed() } else { Style::default() })]),
-                Line::default(),
-                Line::from(Span::styled(login.message.clone(), color("warning"))),
-            ];
+            let inner = modal(frame, outer, title);
+            let mut lines = vec![Line::default()];
+            if login.mode != LoginMode::Login {
+                lines.push(Line::from(vec![Span::styled(format!("{:<10}", "Account"), dim()), Span::raw(format!(" {}", login.account))]));
+            }
+            let first_field_row = lines.len() as u16;
+            for field in &fields {
+                let focused = *field == login.focus;
+                let style = if focused { reversed() } else { Style::default() };
+                let (label, value) = match field {
+                    LoginField::Account => ("Account", login.account.clone()),
+                    LoginField::Password => ("Password", "*".repeat(login.password.chars().count())),
+                    LoginField::Master => ("Master", "*".repeat(login.master.chars().count())),
+                    LoginField::Repeat => ("Repeat", "*".repeat(login.repeat.chars().count())),
+                    LoginField::Storage => ("Keep it", format!("\u{2039} {} \u{203a}", login.method())),
+                };
+                lines.push(Line::from(vec![Span::styled(format!("{label:<10}"), dim()), Span::styled(format!(" {value:<30} "), style)]));
+            }
+            // below the fields, so a long text cannot wrap and move the rows under the cursor
+            if fields.contains(&LoginField::Storage) {
+                lines.push(Line::from(Span::styled(format!("{:<11}{}", "", crate::secrets::describe(login.method())), dim())));
+            } else {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(Span::styled(login.message.clone(), color("warning"))));
             frame.render_widget(Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }), inner);
-            footer(frame, outer, "tab: next field, enter: log in, space: toggle");
-            if login.focus < 2 && !login.busy {
-                let len = if login.focus == 0 { login.account.chars().count() } else { login.password.chars().count() };
-                cursor = Some((inner.x + 12 + len.min(30) as u16, inner.y + 1 + login.focus as u16));
+            let hint = match login.mode {
+                LoginMode::Login => "tab: next field, left/right: where to keep the password, enter: log in, ctrl+q: quit",
+                LoginMode::Unlock => "enter: unlock, ctrl+l: log in with the F-List password instead, ctrl+q: quit",
+                LoginMode::SetMaster => "tab: next field, enter: save, esc: cancel",
+            };
+            footer(frame, outer, hint);
+            let row = fields.iter().position(|field| *field == login.focus).unwrap_or(0) as u16;
+            let length = match login.focus {
+                LoginField::Account => Some(login.account.chars().count()),
+                LoginField::Password => Some(login.password.chars().count()),
+                LoginField::Master => Some(login.master.chars().count()),
+                LoginField::Repeat => Some(login.repeat.chars().count()),
+                LoginField::Storage => None,
+            };
+            if let (Some(length), false) = (length, login.busy) {
+                cursor = Some((inner.x + 11 + length.min(30) as u16, inner.y + first_field_row + row));
             }
         }
         Screen::Character(chars) => {
@@ -1454,6 +1484,24 @@ mod tests {
         let zed = rows.iter().position(|row| row.contains("@Zed")).unwrap() as u16;
         let dot = terminal.backend().buffer()[(6, zed)].style().fg;
         assert_eq!(dot, status_style("busy").fg);
+    }
+
+    #[test]
+    fn the_login_window_draws_in_every_mode() {
+        use crate::screens::LoginMode;
+        for (mode, storage, expected) in [(LoginMode::Login, "masterpass", "Repeat"), (LoginMode::Unlock, "masterpass", "Unlock"), (LoginMode::SetMaster, "masterpass", "Master password"), (LoginMode::Login, "onetime", "Keep it")] {
+            let mut app = app_with_input("");
+            let screen = crate::screens::LoginScreen::new("me", crate::secrets::METHODS.to_vec(), storage, "").with_mode(mode);
+            app.screens.push(Screen::Login(screen));
+            for (width, height) in [(100, 30), (30, 8)] {
+                let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                let shown: String = terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect();
+                if width == 100 {
+                    assert!(shown.contains(expected), "{expected}: {shown}");
+                }
+            }
+        }
     }
 
     #[test]

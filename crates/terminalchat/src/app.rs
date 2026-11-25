@@ -19,7 +19,7 @@ use crate::pager::{EntryKey, Pager, Source};
 use crate::paths;
 use crate::presence::Presence;
 use crate::sanitize::{clean_data, html_unescape, is_safe_url};
-use crate::screens::{CharacterScreen, InfoScreen, LoginScreen, Screen};
+use crate::screens::{CharacterScreen, InfoScreen, LoginMode, LoginScreen, Screen};
 use crate::store::{make_id, ChatStore, AD_PREFIX, CHANNEL, CONSOLE, USER};
 use crate::stores::{AdDrafts, AdSettings, GenderStore, OwnStatus, Pins};
 use crate::style::gender_style;
@@ -37,10 +37,16 @@ pub enum TicketPurpose {
     Startup,
     Reconnect,
     /// Result of the login screen.
-    Login { account: String, password: String, remember: bool },
+    Login { account: String, password: String, storage: String, master: String },
 }
 
 pub enum AppEvent {
+    /// Whether a system password manager answered.
+    SystemStore(bool),
+    /// The password read from the system password manager at start.
+    PasswordLoaded(Result<Option<String>, String>),
+    /// The result of storing the password in the system password manager.
+    PasswordStored(Result<(), String>),
     Term(TermEvent),
     Tick,
     Server(u64, fchat::Event),
@@ -165,6 +171,8 @@ pub struct App {
     last_ping: Option<Instant>,
     /// Own characters whose gender was asked for, so it happens once.
     gender_lookups: HashSet<String>,
+    /// Whether a system password manager is there; None until checked.
+    pub system_store: Option<bool>,
     pub ad_drafts: AdDrafts,
     pub genders: GenderStore,
     pub own_status: OwnStatus,
@@ -242,6 +250,7 @@ impl App {
             muted: crate::stores::Muted::load(base.join("muted.json")),
             last_ping: None,
             gender_lookups: HashSet::new(),
+            system_store: None,
             ad_drafts: AdDrafts::load(base.join("ad_drafts.json")),
             genders: GenderStore::load(chats_dir.join("genders.json")),
             own_status: OwnStatus::load(base.join("status.json")),
@@ -357,6 +366,39 @@ impl App {
             self.open_chat(&first);
         }
         self.startup_notes.push(format!("Config: {} | Data: {}", self.config.path.display(), self.config.data_dir().display()));
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(AppEvent::SystemStore(crate::secrets::system_available()));
+        });
+        self.restore_password();
+    }
+
+    /// Gets the stored password back, the way it was stored, then logs in or shows the login.
+    fn restore_password(&mut self) {
+        let account = self.config.account.clone();
+        match self.config.storage() {
+            crate::secrets::ONETIME => {
+                if let Some(password) = crate::secrets::onetime_load(&account) {
+                    self.config.password = password;
+                }
+                self.continue_start();
+            }
+            crate::secrets::SYSTEMSTORE if !account.is_empty() => {
+                self.sub_title = "reading the password manager...".into();
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(AppEvent::PasswordLoaded(crate::secrets::system_load(&account)));
+                });
+            }
+            crate::secrets::MASTERPASS if self.config.password_secret.is_some() => {
+                let screen = LoginScreen::new(&account, self.login_methods(), crate::secrets::MASTERPASS, "Enter your master password (ctrl+l: log in with the F-List password instead)");
+                self.screens.push(Screen::Login(screen.with_mode(LoginMode::Unlock)));
+            }
+            _ => self.continue_start(),
+        }
+    }
+
+    fn continue_start(&mut self) {
         if self.config.is_complete() {
             self.begin_session();
         } else {
@@ -364,8 +406,149 @@ impl App {
         }
     }
 
+    pub fn on_password_loaded(&mut self, result: Result<Option<String>, String>) {
+        self.sub_title = "offline".into();
+        match result {
+            Ok(Some(password)) => {
+                self.config.password = password;
+                self.continue_start();
+            }
+            Ok(None) => self.show_login("No password in the password manager yet"),
+            Err(error) => self.show_login(&error),
+        }
+    }
+
+    pub fn on_system_store(&mut self, available: bool) {
+        self.system_store = Some(available);
+        let methods = self.login_methods();
+        let wanted = self.default_storage();
+        for screen in &mut self.screens {
+            if let Screen::Login(login) = screen {
+                let chosen = login.method();
+                login.methods = methods.clone();
+                let keep = if login.mode == LoginMode::Login && chosen == crate::secrets::ONETIME && self.config.storage().is_empty() { wanted } else { chosen };
+                login.storage = login.methods.iter().position(|method| *method == keep).unwrap_or(0);
+            }
+        }
+    }
+
+    /// The storage methods to offer: systemstore only with a password manager.
+    pub fn login_methods(&self) -> Vec<&'static str> {
+        crate::secrets::METHODS.iter().copied().filter(|method| *method != crate::secrets::SYSTEMSTORE || self.system_store == Some(true)).collect()
+    }
+
+    /// The chosen method, else the password manager if there is one, else onetime.
+    fn default_storage(&self) -> &'static str {
+        let chosen = self.config.storage();
+        if let Some(method) = crate::secrets::METHODS.iter().find(|method| **method == chosen) {
+            return method;
+        }
+        if self.system_store == Some(true) {
+            crate::secrets::SYSTEMSTORE
+        } else {
+            crate::secrets::ONETIME
+        }
+    }
+
+    /// Keeps the password of the config the given way and removes it from the other places.
+    pub fn store_password(&mut self, method: &str, master: &str) {
+        let account = self.config.account.clone();
+        let password = self.config.password.clone();
+        let before = self.config.storage().to_string();
+        if method != crate::secrets::ONETIME {
+            crate::secrets::onetime_forget(&account);
+        }
+        if method != crate::secrets::MASTERPASS {
+            self.config.password_secret = None;
+        }
+        if method != crate::secrets::SYSTEMSTORE && before == crate::secrets::SYSTEMSTORE {
+            let account = account.clone();
+            tokio::task::spawn_blocking(move || crate::secrets::system_forget(&account));
+        }
+        match method {
+            crate::secrets::ONETIME => {
+                if let Err(error) = crate::secrets::onetime_save(&account, &password) {
+                    self.warn(format!("Could not keep the password: {error}"));
+                }
+            }
+            crate::secrets::MASTERPASS => self.config.password_secret = Some(crate::secrets::lock_with_master(&password, master)),
+            crate::secrets::SYSTEMSTORE => {
+                let tx = self.tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.send(AppEvent::PasswordStored(crate::secrets::system_save(&account, &password)));
+                });
+            }
+            _ => {}
+        }
+        self.config.password_storage = method.to_string();
+        if let Err(error) = self.config.save() {
+            self.warn(error.to_string());
+        }
+    }
+
+    pub fn on_password_stored(&mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            self.warn(format!("{error}; the password is kept until reboot instead"));
+            self.store_password(crate::secrets::ONETIME, "");
+        }
+    }
+
+    pub fn unlock(&mut self, master: &str) {
+        let secret = self.config.password_secret.clone().unwrap_or_default();
+        match crate::secrets::unlock_with_master(&secret, master) {
+            Some(password) => {
+                self.config.password = password;
+                self.screens.retain(|screen| !matches!(screen, Screen::Login(_)));
+                self.continue_start();
+            }
+            None => {
+                if let Some(Screen::Login(login)) = self.screens.last_mut() {
+                    login.busy = false;
+                    login.master.clear();
+                    login.message = "Wrong master password (ctrl+l: log in with the F-List password instead)".into();
+                }
+            }
+        }
+    }
+
+    /// A new master password from the settings.
+    pub fn set_master(&mut self, master: &str) {
+        self.screens.pop();
+        self.store_password(crate::secrets::MASTERPASS, master);
+        self.notify("Password now kept encrypted with your master password", Severity::Information);
+    }
+
+    /// The setting password_storage: stores the password of this session the new way.
+    pub fn change_storage(&mut self, method: &str) -> Result<String, String> {
+        let method = if method.is_empty() { self.default_storage_without_choice() } else { method };
+        if !crate::secrets::METHODS.contains(&method) {
+            return Err(format!("one of {}", crate::secrets::METHODS.join(", ")));
+        }
+        if self.config.password.is_empty() {
+            return Err("log in first, the password is needed to store it".into());
+        }
+        if method == crate::secrets::SYSTEMSTORE && self.system_store != Some(true) {
+            return Err("no system password manager found (it needs a desktop session)".into());
+        }
+        if method == crate::secrets::MASTERPASS {
+            let screen = LoginScreen::new(&self.config.account, self.login_methods(), method, "Choose a master password; it is asked at every start");
+            self.screens.push(Screen::Login(screen.with_mode(LoginMode::SetMaster)));
+            return Ok("enter the master password".into());
+        }
+        self.store_password(method, "");
+        Ok(format!("password: {}", crate::secrets::describe(method)))
+    }
+
+    fn default_storage_without_choice(&self) -> &'static str {
+        if self.system_store == Some(true) {
+            crate::secrets::SYSTEMSTORE
+        } else {
+            crate::secrets::ONETIME
+        }
+    }
+
     pub fn show_login(&mut self, message: &str) {
-        let screen = LoginScreen::new(&self.config.account, self.config.remember_password, message);
+        let screen = LoginScreen::new(&self.config.account, self.login_methods(), self.default_storage(), message);
         self.screens.push(Screen::Login(screen));
     }
 
@@ -432,7 +615,7 @@ impl App {
 
     pub fn on_ticket(&mut self, purpose: TicketPurpose, result: fchat::Result<LoginResult>) {
         match purpose {
-            TicketPurpose::Login { account, password, remember } => match result {
+            TicketPurpose::Login { account, password, storage, master } => match result {
                 Err(error) => {
                     if let Some(Screen::Login(screen)) = self.screens.last_mut() {
                         screen.busy = false;
@@ -449,7 +632,7 @@ impl App {
                     self.screens.retain(|screen| !matches!(screen, Screen::Login(_)));
                     self.config.account = account;
                     self.config.password = password;
-                    self.config.remember_password = remember;
+                    self.store_password(&storage, &master);
                     let preferred = self.match_character(&self.config.character).unwrap_or(login.default_character.clone());
                     self.accept_login(login);
                     self.choose_character(&preferred);
@@ -569,6 +752,13 @@ impl App {
     pub fn logout(&mut self) {
         self.shutdown_client();
         self.ticket.clear();
+        // logging out forgets the password everywhere; the chosen method stays
+        let account = self.config.account.clone();
+        crate::secrets::onetime_forget(&account);
+        if self.config.storage() == crate::secrets::SYSTEMSTORE {
+            tokio::task::spawn_blocking(move || crate::secrets::system_forget(&account));
+        }
+        self.config.password_secret = None;
         self.config.password.clear();
         let _ = self.config.save();
         self.reset_view();
@@ -1806,6 +1996,9 @@ impl App {
     /// Checks and saves one general setting and applies what takes effect at once. The text
     /// tells when the change counts.
     pub fn change_setting(&mut self, key: &str, text: &str) -> Result<String, String> {
+        if key == "password_storage" {
+            return self.change_storage(text);
+        }
         let before = self.config.clone();
         crate::settings::apply(&mut self.config, key, text)?;
         if let Err(error) = self.config.save() {

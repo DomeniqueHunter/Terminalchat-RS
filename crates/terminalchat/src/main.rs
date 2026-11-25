@@ -7,6 +7,7 @@ mod events;
 mod images;
 mod input;
 mod notes;
+mod secrets;
 mod notes_view;
 mod friends;
 mod friends_view;
@@ -128,6 +129,9 @@ fn handle(app: &mut App, event: AppEvent) {
         AppEvent::Profile(name, result) => app.on_profile(&name, result),
         AppEvent::Notes(reply) => app.on_notes(reply),
         AppEvent::Friends(reply) => app.on_friends_reply(reply),
+        AppEvent::SystemStore(available) => app.on_system_store(available),
+        AppEvent::PasswordLoaded(result) => app.on_password_loaded(result),
+        AppEvent::PasswordStored(result) => app.on_password_stored(result),
         AppEvent::Gender(name, gender) => app.on_gender(&name, gender),
         AppEvent::Image(key, frames) => app.images.on_loaded(key, frames),
         AppEvent::Attached(attached, left, top) => {

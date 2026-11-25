@@ -85,6 +85,19 @@ The mouse works too: a click on a tab switches, a click on a row chooses it and 
 
 Every accepted change is used at once and saved to `config.json` right away; a value that cannot be read is refused with the reason. `r` sets an entry back to its default. The `[Reset]` button at the top right (or `R`) sets everything of the current tab back to default after a confirmation (`y` or a second click): on *General* all general settings, on *Colors* all colors. Colors equal to the default are not stored.
 
+## Password
+
+Where the F-List password is kept is chosen in the login window (*Keep it*, left/right) and later in `/settings` (`password_storage`):
+
+| Method | Where | Asked again |
+|---|---|---|
+| `flat` | plain text in `config.json` (permissions 600), as before | never |
+| `onetime` | encrypted in the RAM folder of the session (`$XDG_RUNTIME_DIR`), key bound to the boot | after a reboot; on Windows after quitting |
+| `masterpass` | encrypted in `config.json` with a master password (Argon2id, ChaCha20-Poly1305) | the master password at every start (`ctrl+l` there: log in with the F-List password instead) |
+| `systemstore` | the password manager of the desktop (KWallet / GNOME Keyring via Secret Service, Windows Credential Manager, macOS Keychain) | never; offered only when one answers (not over SSH without a desktop session) |
+
+New logins default to `systemstore` when a password manager is there, else `onetime`. Old configs with a remembered password stay `flat`. `/logout` forgets the stored password everywhere. Only `flat` writes the password into `config.json`, so the Python version, which reads the same file, can log in on its own only with `flat`.
+
 ## Ping
 
 `ping` in `/settings` (General, off by default) rings the terminal bell for every incoming message, private or in a channel, at most once a second. The terminal decides what the bell does (sound, flash or nothing; in Konsole: profile, *Terminal Bell*). `/mute` switches the ping off for the current chat, `/mute <chat>` for a named one (channel or character), and the same command again switches it back on. `/muteall` mutes all open chats, again: unmutes them. Muted chats are kept in `muted.json` per character.
