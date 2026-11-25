@@ -929,6 +929,14 @@ fn draw_settings(frame: &mut Frame, area: Rect, settings: &mut SettingsScreen) -
                         let before: String = input.text().chars().take(input.cursor()).collect();
                         edit_at = Some((SETTING_LABEL as u16 + 3 + text_width(&before) as u16, index));
                     }
+                    (Some(SettingsEdit::Choice(choice)), true) => {
+                        let choices = match setting.field {
+                            crate::settings::Field::Choice(choices) => choices,
+                            _ => &[][..],
+                        };
+                        let picked = choices.get(*choice).copied().unwrap_or_default();
+                        spans.push(Span::styled(pad(&format!("\u{2039} {picked} \u{203a}"), SETTING_VALUE), color("focus")));
+                    }
                     _ => spans.push(Span::styled(pad(&shown, SETTING_VALUE), shown_style)),
                 }
                 if !setting.effect.note().is_empty() {
@@ -1005,6 +1013,7 @@ fn draw_settings(frame: &mut Frame, area: Rect, settings: &mut SettingsScreen) -
     let hint = match &settings.edit {
         None => "click or up/down: choose, tab: General/Colors, enter: change, r: default, R: reset tab, esc: close",
         Some(SettingsEdit::Text(_)) => "enter: save, esc: cancel, ctrl+u: clear",
+        Some(SettingsEdit::Choice(_)) => "left/right: choose, enter: save, esc: cancel",
         Some(SettingsEdit::Color(_)) => "tab/up/down: part, left/right or click: choose, space: toggle, enter: save, esc: cancel",
     };
     footer(frame, outer, hint);

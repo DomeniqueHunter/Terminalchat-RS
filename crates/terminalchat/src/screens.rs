@@ -598,6 +598,8 @@ pub enum Tab {
 
 pub enum SettingsEdit {
     Text(InputBox),
+    /// A choice being picked: the index shown, saved only with enter.
+    Choice(usize),
     Color(ColorEditor),
 }
 
@@ -814,6 +816,27 @@ impl SettingsScreen {
         if let Some(edit) = &mut self.edit {
             let action = match edit {
                 SettingsEdit::Color(editor) => editor.on_key(key),
+                SettingsEdit::Choice(index) => {
+                    let setting = &SETTINGS[self.selected[0]];
+                    let choices = match setting.field {
+                        Field::Choice(choices) => choices,
+                        _ => &[][..],
+                    };
+                    let count = choices.len().max(1);
+                    match key.code {
+                        KeyCode::Esc => Action::Close,
+                        KeyCode::Left | KeyCode::Up => {
+                            *index = (*index + count - 1) % count;
+                            Action::None
+                        }
+                        KeyCode::Right | KeyCode::Down | KeyCode::Tab | KeyCode::Char(' ') => {
+                            *index = (*index + 1) % count;
+                            Action::None
+                        }
+                        KeyCode::Enter => choices.get(*index).map_or(Action::Close, |choice| Action::Setting(setting.key.to_string(), choice.to_string())),
+                        _ => Action::None,
+                    }
+                }
                 SettingsEdit::Text(input) => match key.code {
                     KeyCode::Esc => Action::Close,
                     KeyCode::Enter => {
@@ -895,8 +918,9 @@ impl SettingsScreen {
                 match setting.field {
                     Field::Bool => return Action::Setting(setting.key.to_string(), (current != "true").to_string()),
                     Field::Choice(choices) => {
-                        let position = choices.iter().position(|choice| *choice == current).map_or(0, |position| position + 1);
-                        return Action::Setting(setting.key.to_string(), choices[position % choices.len()].to_string());
+                        // pick with left/right, save with enter: some choices take effort (a master password)
+                        let position = choices.iter().position(|choice| *choice == current).unwrap_or(0);
+                        self.edit = Some(SettingsEdit::Choice(position));
                     }
                     _ => {
                         let mut input = InputBox::new();
@@ -1015,12 +1039,26 @@ mod tests {
     }
 
     #[test]
-    fn switches_and_choices_need_no_editor() {
+    fn switches_need_no_editor_and_choices_are_picked_before_saving() {
         let mut screen = SettingsScreen::new(&Config::default());
         select(&mut screen, "show_sidebar");
         assert!(matches!(press(&mut screen, KeyCode::Enter), Action::Setting(key, value) if key == "show_sidebar" && value == "true"));
         select(&mut screen, "eicons");
-        assert!(matches!(press(&mut screen, KeyCode::Char(' ')), Action::Setting(key, value) if key == "eicons" && value == "off"));
+        assert!(matches!(press(&mut screen, KeyCode::Enter), Action::None));
+        assert!(matches!(press(&mut screen, KeyCode::Right), Action::None));
+        assert!(matches!(press(&mut screen, KeyCode::Enter), Action::Setting(key, value) if key == "eicons" && value == "off"));
+        screen.edit = None;
+        select(&mut screen, "password_storage");
+        press(&mut screen, KeyCode::Enter);
+        for _ in 0..3 {
+            press(&mut screen, KeyCode::Right);
+        }
+        assert!(matches!(press(&mut screen, KeyCode::Enter), Action::Setting(key, value) if key == "password_storage" && value == "systemstore"));
+        screen.edit = None;
+        press(&mut screen, KeyCode::Enter);
+        press(&mut screen, KeyCode::Left);
+        assert!(matches!(press(&mut screen, KeyCode::Esc), Action::None));
+        assert!(screen.edit.is_none());
         select(&mut screen, "protocol");
         assert!(matches!(press(&mut screen, KeyCode::Char('r')), Action::ResetSetting(key) if key == "protocol"));
         assert!(screen.edit.is_none());

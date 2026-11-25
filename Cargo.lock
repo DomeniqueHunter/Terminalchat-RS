@@ -987,7 +987,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fchat"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "futures-util",
  "reqwest",
@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "terminalchat"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "argon2",
  "base64 0.23.1",
